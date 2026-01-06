@@ -7,6 +7,7 @@ to detect potential fraud in insurance claims.
 
 import os
 import json
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -14,6 +15,7 @@ from utils import extract_claim_fields
 from rules import RuleBasedDetector
 from agent import AgentDetector, MockAgentDetector
 from policy_db import PolicyDatabase
+from onedrive_client_app import OneDriveClientApp
 
 
 class FraudDetectionSystem:
@@ -393,43 +395,254 @@ def main():
     """Main entry point."""
     import sys
     
-    # Check command-line arguments
-    if len(sys.argv) != 2:
-        print("Usage: python app.py <claim_pdf>")
-        print("\nExample:")
-        print("  python app.py C1_JohnDoe_Jetwire.pdf")
-        print("\nThe system will automatically match the claim with the policy in the database.")
-        return 1
+    load_dotenv()  # Load environment variables
     
-    # File path from argument
-    claim_pdf = sys.argv[1]
+    # Check if OneDrive is enabled
+    onedrive_enabled = os.getenv("ONEDRIVE_ENABLED", "0") == "1"
     
-    # Check if file exists
-    if not os.path.exists(claim_pdf):
-        print(f"Error: Claim file not found: {claim_pdf}")
-        return 1
+    if onedrive_enabled:
+        print("\n" + "="*70)
+        print("ONEDRIVE FILE FETCHING")
+        print("="*70)
+        
+        tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
+        client_id = os.getenv("ONEDRIVE_CLIENT_ID")
+        client_secret = os.getenv("ONEDRIVE_CLIENT_SECRET")
+        user_email = os.getenv("ONEDRIVE_USER_EMAIL")
+        folder_name = os.getenv("ONEDRIVE_FOLDER_NAME", "Input_attachments")
+        
+        # Require app credentials (no delegated/interactive mode supported)
+        if client_secret and user_email:
+            print(f"📁 Connecting to OneDrive (automated mode)...")
+            print(f"   User: {user_email}")
+            print(f"   Folder: {folder_name}")
+            onedrive = OneDriveClientApp(tenant_id, client_id, client_secret, user_email, folder_name)
+        else:
+            print("✗ Error: ONEDRIVE_CLIENT_SECRET and ONEDRIVE_USER_EMAIL are required when ONEDRIVE_ENABLED=1")
+            return 1
+        
+        # Download all PDF files from OneDrive
+        downloaded_files = onedrive.download_all_files(local_dir="input", file_extension=".pdf")
+        
+        if not downloaded_files:
+            print("\n⚠ No PDF files found in OneDrive folder")
+            print("  Please add claim PDFs to your OneDrive folder and try again")
+            return 0
+        
+        print(f"\n✓ Downloaded {len(downloaded_files)} file(s) from OneDrive")
+    
+    # Determine which files to process
+    if onedrive_enabled and downloaded_files:
+        # Process all downloaded files
+        claim_files = downloaded_files
+    else:
+        # Check command-line arguments for local file
+        if len(sys.argv) != 2:
+            print("\nUsage: python app.py <claim_pdf>")
+            print("\nExample:")
+            print("  python app.py C1_JohnDoe_Jetwire.pdf")
+            print("\nOr enable OneDrive in .env file:")
+            print("  ONEDRIVE_ENABLED=1")
+            print("\nThe system will automatically match the claim with the policy in the database.")
+            return 1
+        
+        claim_pdf = sys.argv[1]
+        
+        # Check if file exists
+        if not os.path.exists(claim_pdf):
+            print(f"Error: Claim file not found: {claim_pdf}")
+            return 1
+        
+        claim_files = [claim_pdf]
     
     # Initialize fraud detection system
     fraud_system = FraudDetectionSystem(use_ai=True)
     
-    # Analyze the claim
-    results = fraud_system.analyze_claim(claim_pdf)
+    # Process each file
+    for i, claim_file in enumerate(claim_files, 1):
+        if len(claim_files) > 1:
+            print(f"\n{'='*70}")
+            print(f"PROCESSING FILE {i}/{len(claim_files)}: {os.path.basename(claim_file)}")
+            print(f"{'='*70}")
+        
+        # Analyze the claim
+        results = fraud_system.analyze_claim(claim_file)
+        
+        # Check for errors
+        if "error" in results:
+            print(f"\n✗ Analysis failed: {results['error']}")
+            continue
+        
+        # Generate and display report
+        fraud_system.generate_report(results, output_format="console")
+        
+        # Save results
+        fraud_system.save_results(results)
+        
+        print(f"\n✓ Analysis complete for {os.path.basename(claim_file)}!")
     
-    # Check for errors
-    if "error" in results:
-        print(f"\n✗ Analysis failed: {results['error']}")
+    print(f"\n{'='*70}")
+    print(f"✓ All files processed! ({len(claim_files)} total)")
+    print(f"{'='*70}\n")
+    
+    return 0
+
+
+def watch_mode():
+    """
+    Continuously monitor OneDrive SharePoint folder for new files
+    and process them automatically.
+    """
+    load_dotenv()
+    
+    # OneDrive configuration
+    tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
+    client_id = os.getenv("ONEDRIVE_CLIENT_ID")
+    client_secret = os.getenv("ONEDRIVE_CLIENT_SECRET")
+    user_email = os.getenv("ONEDRIVE_USER_EMAIL")
+    folder_name = os.getenv("ONEDRIVE_FOLDER_NAME", "Input_attachments")
+    
+    if not all([tenant_id, client_id, client_secret, user_email]):
+        print("✗ Error: Missing OneDrive credentials")
+        print("  Required: ONEDRIVE_TENANT_ID, ONEDRIVE_CLIENT_ID, ONEDRIVE_CLIENT_SECRET, ONEDRIVE_USER_EMAIL")
         return 1
     
-    # Generate and display report
-    fraud_system.generate_report(results, output_format="console")
+    # Local folder for processed files
+    processed_folder = "input"
+    os.makedirs(processed_folder, exist_ok=True)
     
-    # Save results
-    fraud_system.save_results(results)
+    # Initialize OneDrive client and fraud detection system
+    onedrive = OneDriveClientApp(tenant_id, client_id, client_secret, user_email, folder_name)
+    fraud_system = FraudDetectionSystem(use_ai=True)
     
-    print("\n✓ Analysis complete!")
-    return 0
+    print("\n" + "="*70)
+    print("ONEDRIVE MONITORING SERVICE STARTED")
+    print("="*70)
+    print(f"Monitoring OneDrive: {user_email}/{folder_name}")
+    print(f"Processed files saved to: {os.path.abspath(processed_folder)}")
+    print("Press Ctrl+C to stop")
+    print("="*70 + "\n")
+    
+    # Track processed files by name
+    processed_files = set()
+    
+    # Initial scan - mark existing files in input folder as processed
+    if os.path.exists(processed_folder):
+        for filename in os.listdir(processed_folder):
+            if filename.lower().endswith('.pdf'):
+                processed_files.add(filename)
+    
+    try:
+        iteration = 0
+        while True:
+            try:
+                iteration += 1
+                
+                # List files from OneDrive
+                onedrive_files = onedrive.list_files()
+                
+                # Filter PDF files
+                pdf_files = [f for f in onedrive_files if f['name'].lower().endswith('.pdf')]
+                
+                # Find new files (not yet processed)
+                new_files = [f for f in pdf_files if f['name'] not in processed_files]
+                
+                # Show status every check
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} total PDFs, {len(processed_files)} processed, {len(new_files)} new", end='\r')
+                
+                if new_files:
+                    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Found {len(new_files)} new file(s)")
+                    for f in new_files:
+                        print(f"  - {f['name']}")
+                
+                for file_info in new_files:
+                    filename = file_info['name']
+                    temp_path = None
+                    
+                    print(f"\n📥 Downloading: {filename}")
+                    
+                    try:
+                        # Download file to temporary location
+                        temp_path = onedrive.download_file(file_info, local_dir="temp_download")
+                        
+                        print(f"✓ Downloaded")
+                        print(f"\n🔍 Processing: {filename}")
+                        
+                        # Process the file
+                        results = fraud_system.analyze_claim(temp_path)
+                        
+                        if "error" in results:
+                            print(f"\n✗ Analysis failed: {results['error']}")
+                        else:
+                            # Generate report
+                            fraud_system.generate_report(results, output_format="console")
+                            fraud_system.save_results(results)
+                            print(f"\n✓ Analysis complete for {filename}!")
+                        
+                        # Move file to processed folder
+                        destination = os.path.join(processed_folder, filename)
+                        
+                        # Handle duplicate filenames
+                        counter = 1
+                        base_name, ext = os.path.splitext(filename)
+                        while os.path.exists(destination):
+                            destination = os.path.join(processed_folder, 
+                                                     f"{base_name}_{counter}{ext}")
+                            counter += 1
+                        
+                        os.rename(temp_path, destination)
+                        print(f"✓ Saved to: {destination}")
+                        
+                        # Mark as processed
+                        processed_files.add(filename)
+                        
+                    except Exception as e:
+                        print(f"✗ Error processing {filename}: {str(e)}")
+                        # Clean up temp file if it exists
+                        if temp_path and os.path.exists(temp_path):
+                            try:
+                                os.remove(temp_path)
+                            except:
+                                pass
+                        # Still mark as processed to avoid reprocessing
+                        processed_files.add(filename)
+                
+            except Exception as e:
+                print(f"\n✗ Error checking OneDrive: {str(e)}")
+                print("   Will retry in 10 seconds...")
+            
+            # Wait before next check (adjust polling interval as needed)
+            time.sleep(10)  # Check every 10 seconds
+            
+    except KeyboardInterrupt:
+        print("\n\n" + "="*70)
+        print("ONEDRIVE MONITORING SERVICE STOPPED")
+        print("="*70)
+        
+        # Clear input directory
+        print("Clearing input directory...")
+        try:
+            if os.path.exists(processed_folder):
+                for filename in os.listdir(processed_folder):
+                    file_path = os.path.join(processed_folder, filename)
+                    try:
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                    except Exception as e:
+                        print(f"  ✗ Could not delete {filename}: {e}")
+                print("✓ Input directory cleared")
+        except Exception as e:
+            print(f"✗ Error clearing input directory: {e}")
+        
+        print("="*70)
+        return 0
 
 
 if __name__ == "__main__":
     import sys
-    sys.exit(main())
+    
+    # Check if watch mode is enabled
+    if len(sys.argv) > 1 and sys.argv[1] == "--watch":
+        sys.exit(watch_mode())
+    else:
+        sys.exit(main())

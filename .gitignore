@@ -10,6 +10,8 @@ ENV/
 
 # Local env files
 .env
+*env
+*.txt 
 
 # IDE/editor
 .vscode/

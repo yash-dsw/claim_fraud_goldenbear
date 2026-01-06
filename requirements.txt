@@ -2,3 +2,5 @@ pypdf
 pandas
 python-dotenv
 openai
+requests
+msal
