@@ -183,6 +183,91 @@ class OneDriveClientApp:
         except Exception as e:
             print(f"\n✗ Error: {str(e)}")
             return downloaded_files
+    
+    def _create_folder_if_not_exists(self, folder_name):
+        """Create a folder in OneDrive root if it doesn't exist.
+        
+        Args:
+            folder_name: Name of the folder to create
+            
+        Returns:
+            Folder ID or None if failed
+        """
+        try:
+            # First, try to get the folder if it exists
+            folder_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{folder_name}"
+            
+            response = requests.get(folder_url, headers=self._get_headers())
+            
+            if response.status_code == 200:
+                # Folder exists
+                return response.json().get("id")
+            
+            # Folder doesn't exist, create it
+            create_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root/children"
+            
+            data = {
+                "name": folder_name,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "rename"
+            }
+            
+            response = requests.post(create_url, headers=self._get_headers(), json=data)
+            response.raise_for_status()
+            
+            result = response.json()
+            print(f"  ✓ Created OneDrive folder: {folder_name}")
+            return result.get("id")
+            
+        except Exception as e:
+            print(f"  ✗ Error creating folder: {str(e)}")
+            return None
+    
+    def upload_file(self, local_file_path, onedrive_folder_name=None):
+        """Upload a file to a OneDrive folder.
+        
+        Args:
+            local_file_path: Path to the local file to upload
+            onedrive_folder_name: Name of the OneDrive folder (defaults to self.folder_name)
+        
+        Returns:
+            Dictionary with upload info or None if failed
+        """
+        try:
+            folder_name = onedrive_folder_name or self.folder_name
+            file_name = os.path.basename(local_file_path)
+            
+            # Ensure folder exists (create if needed)
+            folder_id = self._create_folder_if_not_exists(folder_name)
+            
+            if not folder_id:
+                raise Exception(f"Could not access or create folder '{folder_name}'")
+            
+            # Upload the file using direct path
+            upload_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{folder_name}/{file_name}:/content"
+            
+            with open(local_file_path, 'rb') as f:
+                file_content = f.read()
+            
+            headers = self._get_headers()
+            headers["Content-Type"] = "application/octet-stream"
+            
+            response = requests.put(upload_url, headers=headers, data=file_content)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            return {
+                "id": result.get("id"),
+                "name": result.get("name"),
+                "size": result.get("size"),
+                "web_url": result.get("webUrl"),
+                "success": True
+            }
+            
+        except Exception as e:
+            print(f"  ✗ Error uploading file: {str(e)}")
+            return None
 
 
 def test_app_auth():

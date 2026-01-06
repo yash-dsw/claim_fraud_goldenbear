@@ -44,6 +44,23 @@ class FraudDetectionSystem:
                 print("⚠ No API key found, using mock AI agent")
             self.agent = MockAgentDetector()
             self.use_ai = False
+        
+        # Initialize OneDrive client if enabled
+        self.onedrive_client = None
+        self.onedrive_output_folder = None
+        if os.getenv("ONEDRIVE_ENABLED", "0") == "1":
+            tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
+            client_id = os.getenv("ONEDRIVE_CLIENT_ID")
+            client_secret = os.getenv("ONEDRIVE_CLIENT_SECRET")
+            user_email = os.getenv("ONEDRIVE_USER_EMAIL")
+            input_folder = os.getenv("ONEDRIVE_FOLDER_NAME", "Input_attachments")
+            self.onedrive_output_folder = os.getenv("ONEDRIVE_OUTPUT_FOLDER", "Output_attachments")
+            
+            if all([tenant_id, client_id, client_secret, user_email]):
+                self.onedrive_client = OneDriveClientApp(
+                    tenant_id, client_id, client_secret, user_email, input_folder
+                )
+                print(f"✓ OneDrive upload enabled (folder: {self.onedrive_output_folder})")
     
     def analyze_claim(self, claim_pdf_path):
         """
@@ -387,6 +404,17 @@ class FraudDetectionSystem:
         with open(html_path, 'w') as f:
             f.write(html_content)
         print(f"✓ HTML report saved: {html_path}")
+        
+        # Upload HTML to OneDrive if enabled
+        if self.onedrive_client:
+            print("\n📤 Uploading HTML report to OneDrive...")
+            upload_result = self.onedrive_client.upload_file(html_path, self.onedrive_output_folder)
+            if upload_result:
+                print(f"✓ HTML report uploaded to OneDrive: {upload_result['name']}")
+                if upload_result.get('web_url'):
+                    print(f"  View online: {upload_result['web_url']}")
+            else:
+                print("⚠ Failed to upload HTML report to OneDrive")
         
         return json_path, html_path
 
