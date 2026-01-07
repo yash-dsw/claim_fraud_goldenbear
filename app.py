@@ -717,8 +717,8 @@ def watch_mode():
 if __name__ == "__main__":
     import sys
     
-    # Check if watch mode is enabled
-    if len(sys.argv) > 1 and sys.argv[1] == "--watch":
-        sys.exit(watch_mode())
-    else:
+    # Default to watch mode unless a file is specified
+    if len(sys.argv) > 1:
         sys.exit(main())
+    else:
+        sys.exit(watch_mode())
