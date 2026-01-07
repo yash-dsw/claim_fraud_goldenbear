@@ -269,6 +269,25 @@ class OneDriveClientApp:
             print(f"  ✗ Error uploading file: {str(e)}")
             return None
 
+    def delete_file(self, file_id):
+        """Delete a file from OneDrive.
+        
+        Args:
+            file_id: The ID of the file to delete.
+        """
+        try:
+            delete_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{file_id}"
+            
+            response = requests.delete(delete_url, headers=self._get_headers())
+            
+            if response.status_code == 204:
+                return True
+            else:
+                response.raise_for_status()
+                
+        except Exception as e:
+            raise Exception(f"Failed to delete file: {str(e)}")
+
 
 def test_app_auth():
     """Test OneDrive connection with app credentials."""

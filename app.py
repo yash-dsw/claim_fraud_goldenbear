@@ -616,6 +616,39 @@ def watch_mode():
                 # List files from OneDrive
                 onedrive_files = onedrive.list_files()
                 
+                # Check for RESET_CACHE.txt
+                reset_file = next((f for f in onedrive_files if f['name'] == 'RESET_CACHE.txt'), None)
+                if reset_file:
+                    print("\n" + "="*70)
+                    print("🧹 RESET TRIGGERED: checking for RESET_CACHE.txt")
+                    
+                    # Clear local input folder
+                    print(f"Clearing local folder: {processed_folder}...")
+                    for filename in os.listdir(processed_folder):
+                        file_path = os.path.join(processed_folder, filename)
+                        try:
+                            if os.path.isfile(file_path):
+                                os.remove(file_path)
+                        except Exception as e:
+                            print(f"  ✗ Could not delete {filename}: {e}")
+                    
+                    # Reset processed files set
+                    processed_files.clear()
+                    print("✓ Local cache cleared")
+                    
+                    # Delete RESET_CACHE.txt from OneDrive
+                    print("Deleting RESET_CACHE.txt from OneDrive...")
+                    try:
+                        onedrive.delete_file(reset_file['id'])
+                        print("✓ Remote reset file deleted")
+                    except Exception as e:
+                        print(f"✗ Failed to delete remote reset file: {e}")
+                    
+                    print("="*70 + "\n")
+                    
+                    # Start fresh check immediately
+                    continue
+                
                 # Filter PDF files
                 # Only process files starting with 'C' followed by a number (e.g., C1, C2...)
                 pdf_files = [
