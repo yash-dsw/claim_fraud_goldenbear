@@ -9,6 +9,9 @@ import os
 import json
 import time
 from datetime import datetime
+import argparse
+import sys
+import signal
 from dotenv import load_dotenv
 
 from utils import extract_claim_fields
@@ -419,8 +422,8 @@ class FraudDetectionSystem:
         return json_path, html_path
 
 
-def main():
-    """Main entry point."""
+def run_single_pass(claim_file_arg=None):
+    """Run a single pass of file processing."""
     import sys
     
     load_dotenv()  # Load environment variables
@@ -506,7 +509,7 @@ def main():
         claim_files = downloaded_files
     else:
         # Check command-line arguments for local file
-        if len(sys.argv) != 2:
+        if not claim_file_arg:
             print("\nUsage: python app.py <claim_pdf>")
             print("\nExample:")
             print("  python app.py C1_JohnDoe_Jetwire.pdf")
@@ -515,7 +518,7 @@ def main():
             print("\nThe system will automatically match the claim with the policy in the database.")
             return 1
         
-        claim_pdf = sys.argv[1]
+        claim_pdf = claim_file_arg
         
         # Check if file exists
         if not os.path.exists(claim_pdf):
@@ -601,6 +604,9 @@ def watch_mode():
             if filename.lower().endswith('.pdf'):
                 processed_files.add(filename)
     
+    # Check if running in background/non-interactive mode
+    is_interactive = sys.stdout.isatty()
+    
     try:
         iteration = 0
         while True:
@@ -624,7 +630,13 @@ def watch_mode():
                 new_files = [f for f in pdf_files if f['name'] not in processed_files]
                 
                 # Show status every check
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} total PDFs, {len(processed_files)} processed, {len(new_files)} new", end='\r')
+                status_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} total PDFs, {len(processed_files)} processed, {len(new_files)} new"
+                
+                if is_interactive:
+                    print(status_msg, end='\r')
+                elif iteration == 1 or iteration % 60 == 0 or new_files:
+                     # Log less frequently in background mode (every ~10 mins) or when activity occurs
+                    print(status_msg)
                 
                 if new_files:
                     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Found {len(new_files)} new file(s)")
@@ -715,10 +727,41 @@ def watch_mode():
 
 
 if __name__ == "__main__":
-    import sys
-    
-    # Default to watch mode unless a file is specified
-    if len(sys.argv) > 1:
-        sys.exit(main())
-    else:
-        sys.exit(watch_mode())
+    def main():
+        """Main entry point"""
+        
+        # Parse command line arguments
+        parser = argparse.ArgumentParser(description='Claims Fraud Detection System')
+        parser.add_argument('--port', type=int, help='Port number (ignored, for compatibility)')
+        parser.add_argument('--host', type=str, help='Host address (ignored, for compatibility)')
+        parser.add_argument('claim_file', nargs='?', help='Specific claim file to process (optional)')
+        
+        # Parse args
+        args = parser.parse_args()
+        
+        # Force output to be unbuffered for nohup
+        sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+        sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+        
+        print(f"Starting Claims Fraud Detection System at {datetime.now()}")
+        print(f"Python unbuffered output enabled for logging")
+        sys.stdout.flush()
+        
+        # Determine strict nohup/background mode - if port/host args are present or no args, assume watching
+        
+        try:
+            # If a specific file is provided, run once
+            if args.claim_file:
+                 sys.exit(run_single_pass(args.claim_file))
+            else:
+                # Default to watch mode (especially for nohup which typically has no file args)
+                watch_mode()
+            
+        except Exception as e:
+            print(f"\n✗ Fatal error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+            sys.exit(1)
+
+    main()
