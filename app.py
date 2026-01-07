@@ -449,15 +449,56 @@ def main():
             print("✗ Error: ONEDRIVE_CLIENT_SECRET and ONEDRIVE_USER_EMAIL are required when ONEDRIVE_ENABLED=1")
             return 1
         
-        # Download all PDF files from OneDrive
-        downloaded_files = onedrive.download_all_files(local_dir="input", file_extension=".pdf")
+        # List and filter files from OneDrive
+        print(f"\n📁 Listing files in OneDrive folder '{folder_name}'...")
+        try:
+            all_files = onedrive.list_files()
+        except Exception as e:
+            print(f"✗ Error listing files: {e}")
+            return 1
+
+        # Filter for C1, C2, etc.
+        target_files = [
+            f for f in all_files 
+            if f['name'].lower().endswith('.pdf') and 
+            f['name'].upper().startswith('C') and 
+            len(f['name']) > 1 and 
+            f['name'][1].isdigit()
+        ]
+        
+        if not target_files:
+            print("\n⚠ No matching PDF files (starting with C1, C2...) found in OneDrive folder")
+            return 0
+            
+        downloaded_files = []
+        print(f"   Found {len(target_files)} matching files")
+        
+        # Download new files
+        local_dir = "input"
+        os.makedirs(local_dir, exist_ok=True)
+        
+        for file_info in target_files:
+            local_path = os.path.join(local_dir, file_info['name'])
+            
+            # Match behavior: only process new files
+            if os.path.exists(local_path):
+                print(f"\n⚠ Skipping existing file: {file_info['name']}")
+                continue
+                
+            print(f"\n📥 Downloading: {file_info['name']}")
+            try:
+                path = onedrive.download_file(file_info, local_dir=local_dir)
+                if path:
+                    downloaded_files.append(path)
+                    print(f"   ✓ Saved to: {path}")
+            except Exception as e:
+                print(f"✗ Error downloading {file_info['name']}: {e}")
         
         if not downloaded_files:
-            print("\n⚠ No PDF files found in OneDrive folder")
-            print("  Please add claim PDFs to your OneDrive folder and try again")
+            print("\n⚠ No new files to process")
             return 0
-        
-        print(f"\n✓ Downloaded {len(downloaded_files)} file(s) from OneDrive")
+            
+        print(f"\n✓ Downloaded {len(downloaded_files)} new file(s) from OneDrive")
     
     # Determine which files to process
     if onedrive_enabled and downloaded_files:
@@ -570,7 +611,14 @@ def watch_mode():
                 onedrive_files = onedrive.list_files()
                 
                 # Filter PDF files
-                pdf_files = [f for f in onedrive_files if f['name'].lower().endswith('.pdf')]
+                # Only process files starting with 'C' followed by a number (e.g., C1, C2...)
+                pdf_files = [
+                    f for f in onedrive_files 
+                    if f['name'].lower().endswith('.pdf') and 
+                    f['name'].upper().startswith('C') and 
+                    len(f['name']) > 1 and 
+                    f['name'][1].isdigit()
+                ]
                 
                 # Find new files (not yet processed)
                 new_files = [f for f in pdf_files if f['name'] not in processed_files]
