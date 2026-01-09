@@ -19,6 +19,7 @@ from rules import RuleBasedDetector
 from agent import AgentDetector, MockAgentDetector
 from policy_db import PolicyDatabase
 from onedrive_client_app import OneDriveClientApp
+from email_sender import EmailSender, load_email_metadata, get_recipient_email
 
 
 class FraudDetectionSystem:
@@ -48,9 +49,10 @@ class FraudDetectionSystem:
             self.agent = MockAgentDetector()
             self.use_ai = False
         
-        # Initialize OneDrive client if enabled
+        # Initialize OneDrive client and Email sender if enabled
         self.onedrive_client = None
         self.onedrive_output_folder = None
+        self.email_sender = None
         if os.getenv("ONEDRIVE_ENABLED", "0") == "1":
             tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
             client_id = os.getenv("ONEDRIVE_CLIENT_ID")
@@ -64,6 +66,12 @@ class FraudDetectionSystem:
                     tenant_id, client_id, client_secret, user_email, input_folder
                 )
                 print(f"✓ OneDrive upload enabled (folder: {self.onedrive_output_folder})")
+                
+                # Initialize email sender (shares credentials with OneDrive)
+                self.email_sender = EmailSender(
+                    tenant_id, client_id, client_secret, user_email
+                )
+                print(f"✓ Email notifications enabled (sender: {user_email})")
     
     def analyze_claim(self, claim_pdf_path):
         """
@@ -80,12 +88,12 @@ class FraudDetectionSystem:
         print("="*70)
         
         # Step 1: Extract claim data
-        print("\n[1/5] Extracting claim data...")
+        print("\n[1/4] Extracting claim data...")
         claim_data = extract_claim_fields(claim_pdf_path)
         print(f"✓ Extracted {len([v for v in claim_data.values() if v and v != ''])} claim fields")
         
         # Step 2: Match policy from database
-        print("\n[2/5] Matching policy from database...")
+        print("\n[2/4] Matching policy from database...")
         claim_policy_number = claim_data.get("policy_number", "")
         
         if not claim_policy_number:
@@ -114,14 +122,14 @@ class FraudDetectionSystem:
         print(f"  Insured: {policy_data.get('named_insured', 'N/A')}")
         
         # Step 3: Run rule-based detection
-        print("\n[3/5] Running rule-based fraud detection...")
+        print("\n[3/4] Running rule-based fraud detection...")
         rule_flags = self.rule_detector.detect(policy_data, claim_data)
         risk_score, risk_level = self.rule_detector.get_overall_risk_score()
         print(f"✓ Detected {len(rule_flags)} fraud indicators")
         print(f"✓ Risk Score: {risk_score} ({risk_level})")
         
         # Step 4: Generate summary using AI (optional)
-        print("\n[4/5] Generating executive summary...")
+        print("\n[4/4] Generating executive summary...")
         summary_result = self.agent.summarize_findings(
             policy_data, claim_data, rule_flags, risk_level, risk_score
         )
@@ -389,8 +397,14 @@ class FraudDetectionSystem:
 """
         return html
     
-    def save_results(self, results, output_dir="output"):
-        """Save results to files."""
+    def save_results(self, results, output_dir="output", email_metadata=None):
+        """Save results to files and optionally send email.
+        
+        Args:
+            results: Analysis results dictionary
+            output_dir: Directory to save output files
+            email_metadata: Optional dict from companion JSON for sending email
+        """
         os.makedirs(output_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -418,6 +432,18 @@ class FraudDetectionSystem:
                     print(f"  View online: {upload_result['web_url']}")
             else:
                 print("⚠ Failed to upload HTML report to OneDrive")
+        
+        # Send email with HTML report if email metadata is available
+        if self.email_sender and email_metadata:
+            recipient = get_recipient_email(email_metadata)
+            if recipient:
+                print(f"\n📧 Sending fraud report email to: {recipient}")
+                if self.email_sender.send_fraud_report_email(recipient, email_metadata, html_content):
+                    print(f"✓ Email sent successfully to {recipient}")
+                else:
+                    print(f"⚠ Failed to send email to {recipient}")
+            else:
+                print("⚠ No recipient email found in companion JSON")
         
         return json_path, html_path
 
@@ -460,27 +486,64 @@ def run_single_pass(claim_file_arg=None):
             print(f"✗ Error listing files: {e}")
             return 1
 
-        # Filter for C1, C2, etc.
-        target_files = [
-            f for f in all_files 
-            if f['name'].lower().endswith('.pdf') and 
-            f['name'].upper().startswith('C') and 
-            len(f['name']) > 1 and 
-            f['name'][1].isdigit()
-        ]
+        # Helper function to categorize files
+        def is_target_file(filename):
+            """Check if file matches C*.pdf or C*.pdf.json pattern."""
+            name_upper = filename.upper()
+            name_lower = filename.lower()
+            
+            # Check if it starts with C followed by a digit
+            if not (name_upper.startswith('C') and len(filename) > 1 and filename[1].isdigit()):
+                return False, None
+            
+            # Check if it's a PDF or PDF.json file
+            if name_lower.endswith('.pdf'):
+                return True, 'pdf'
+            elif name_lower.endswith('.pdf.json'):
+                return True, 'json'
+            
+            return False, None
         
-        if not target_files:
+        # Filter for C1, C2, etc. (PDFs and companion JSON files)
+        pdf_files = []
+        json_files = []
+        for f in all_files:
+            is_target, file_type = is_target_file(f['name'])
+            if is_target:
+                if file_type == 'pdf':
+                    pdf_files.append(f)
+                elif file_type == 'json':
+                    json_files.append(f)
+        
+        if not pdf_files:
             print("\n⚠ No matching PDF files (starting with C1, C2...) found in OneDrive folder")
             return 0
             
         downloaded_files = []
-        print(f"   Found {len(target_files)} matching files")
+        print(f"   Found {len(pdf_files)} PDF files and {len(json_files)} companion JSON files")
         
         # Download new files
         local_dir = "input"
         os.makedirs(local_dir, exist_ok=True)
         
-        for file_info in target_files:
+        # First, download companion JSON files (just save, don't add to processing list)
+        for file_info in json_files:
+            local_path = os.path.join(local_dir, file_info['name'])
+            
+            if os.path.exists(local_path):
+                print(f"\n⚠ Skipping existing JSON: {file_info['name']}")
+                continue
+                
+            print(f"\n📥 Downloading companion JSON: {file_info['name']}")
+            try:
+                path = onedrive.download_file(file_info, local_dir=local_dir)
+                if path:
+                    print(f"   ✓ JSON saved to: {path}")
+            except Exception as e:
+                print(f"✗ Error downloading {file_info['name']}: {e}")
+        
+        # Download PDF files for processing
+        for file_info in pdf_files:
             local_path = os.path.join(local_dir, file_info['name'])
             
             # Match behavior: only process new files
@@ -548,8 +611,12 @@ def run_single_pass(claim_file_arg=None):
         # Generate and display report
         fraud_system.generate_report(results, output_format="console")
         
-        # Save results
-        fraud_system.save_results(results)
+        # Load email metadata from companion JSON if it exists
+        json_path = claim_file + ".json"
+        email_metadata = load_email_metadata(json_path)
+        
+        # Save results and send email
+        fraud_system.save_results(results, email_metadata=email_metadata)
         
         print(f"\n✓ Analysis complete for {os.path.basename(claim_file)}!")
     
@@ -595,13 +662,13 @@ def watch_mode():
     print("Press Ctrl+C to stop")
     print("="*70 + "\n")
     
-    # Track processed files by name
+    # Track processed files by name (both PDF and JSON)
     processed_files = set()
     
     # Initial scan - mark existing files in input folder as processed
     if os.path.exists(processed_folder):
         for filename in os.listdir(processed_folder):
-            if filename.lower().endswith('.pdf'):
+            if filename.lower().endswith('.pdf') or filename.lower().endswith('.pdf.json'):
                 processed_files.add(filename)
     
     # Check if running in background/non-interactive mode
@@ -649,34 +716,81 @@ def watch_mode():
                     # Start fresh check immediately
                     continue
                 
-                # Filter PDF files
+                # Filter PDF and JSON files
                 # Only process files starting with 'C' followed by a number (e.g., C1, C2...)
-                pdf_files = [
-                    f for f in onedrive_files 
-                    if f['name'].lower().endswith('.pdf') and 
-                    f['name'].upper().startswith('C') and 
-                    len(f['name']) > 1 and 
-                    f['name'][1].isdigit()
-                ]
+                # Also pick up companion JSON files (e.g., C1_test.pdf.json)
                 
-                # Find new files (not yet processed)
-                new_files = [f for f in pdf_files if f['name'] not in processed_files]
+                def is_target_file(filename):
+                    """Check if file matches C*.pdf or C*.pdf.json pattern."""
+                    name_upper = filename.upper()
+                    name_lower = filename.lower()
+                    
+                    # Check if it starts with C followed by a digit
+                    if not (name_upper.startswith('C') and len(filename) > 1 and filename[1].isdigit()):
+                        return False, None
+                    
+                    # Check if it's a PDF or PDF.json file
+                    if name_lower.endswith('.pdf'):
+                        return True, 'pdf'
+                    elif name_lower.endswith('.pdf.json'):
+                        return True, 'json'
+                    
+                    return False, None
+                
+                # Categorize files
+                target_files = []
+                for f in onedrive_files:
+                    is_target, file_type = is_target_file(f['name'])
+                    if is_target:
+                        f['_file_type'] = file_type  # Add metadata for later use
+                        target_files.append(f)
+                
+                # Separate into PDF files (for processing) and all target files (for tracking)
+                pdf_files = [f for f in target_files if f['_file_type'] == 'pdf']
+                
+                # Find new files (not yet processed) - check all target files (PDF and JSON)
+                new_target_files = [f for f in target_files if f['name'] not in processed_files]
+                
+                # Separate new PDF files (to be processed) from new JSON files (just download)
+                new_pdf_files = [f for f in new_target_files if f['_file_type'] == 'pdf']
+                new_json_files = [f for f in new_target_files if f['_file_type'] == 'json']
                 
                 # Show status every check
-                status_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} total PDFs, {len(processed_files)} processed, {len(new_files)} new"
+                status_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} PDFs, {len(target_files)} total files, {len(processed_files)} processed, {len(new_target_files)} new"
                 
                 if is_interactive:
                     print(status_msg, end='\r')
-                elif iteration == 1 or iteration % 60 == 0 or new_files:
+                elif iteration == 1 or iteration % 60 == 0 or new_target_files:
                      # Log less frequently in background mode (every ~10 mins) or when activity occurs
                     print(status_msg)
                 
-                if new_files:
-                    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Found {len(new_files)} new file(s)")
-                    for f in new_files:
-                        print(f"  - {f['name']}")
+                if new_target_files:
+                    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Found {len(new_target_files)} new file(s)")
+                    for f in new_target_files:
+                        file_type_label = 'PDF' if f['_file_type'] == 'pdf' else 'JSON'
+                        print(f"  - {f['name']} ({file_type_label})")
                 
-                for file_info in new_files:
+                # First, download and save any new JSON files (just save, don't process)
+                for file_info in new_json_files:
+                    filename = file_info['name']
+                    
+                    print(f"\n📥 Downloading companion JSON: {filename}")
+                    
+                    try:
+                        # Download JSON file directly to input folder
+                        json_path = onedrive.download_file(file_info, local_dir=processed_folder)
+                        print(f"✓ JSON saved to: {json_path}")
+                        
+                        # Mark as processed
+                        processed_files.add(filename)
+                        
+                    except Exception as e:
+                        print(f"✗ Error downloading {filename}: {str(e)}")
+                        # Still mark as processed to avoid retry loop
+                        processed_files.add(filename)
+                
+                # Process new PDF files
+                for file_info in new_pdf_files:
                     filename = file_info['name']
                     temp_path = None
                     
@@ -695,9 +809,14 @@ def watch_mode():
                         if "error" in results:
                             print(f"\n✗ Analysis failed: {results['error']}")
                         else:
+                            # Load email metadata from companion JSON if it exists
+                            json_filename = filename + ".json"
+                            json_path = os.path.join(processed_folder, json_filename)
+                            email_metadata = load_email_metadata(json_path)
+                            
                             # Generate report
                             fraud_system.generate_report(results, output_format="console")
-                            fraud_system.save_results(results)
+                            fraud_system.save_results(results, email_metadata=email_metadata)
                             print(f"\n✓ Analysis complete for {filename}!")
                         
                         # Move file to processed folder
