@@ -65,9 +65,55 @@ class EmailSender:
             "Content-Type": "application/json"
         }
     
+    def send_email_from_user(self, sender_email, to_email, subject, html_body):
+        """
+        Send an email from a specific user via Microsoft Graph API.
+        
+        Args:
+            sender_email: Email address to send FROM
+            to_email: Recipient email address
+            subject: Email subject
+            html_body: HTML content of the email
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        url = f"https://graph.microsoft.com/v1.0/users/{sender_email}/sendMail"
+        
+        email_payload = {
+            "message": {
+                "subject": subject,
+                "body": {
+                    "contentType": "HTML",
+                    "content": html_body
+                },
+                "toRecipients": [
+                    {
+                        "emailAddress": {
+                            "address": to_email
+                        }
+                    }
+                ]
+            },
+            "saveToSentItems": True
+        }
+        
+        try:
+            response = requests.post(url, headers=self._get_headers(), json=email_payload)
+            
+            if response.status_code == 202:
+                return True
+            else:
+                print(f"[ERROR] Failed to send email: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"[ERROR] Error sending email: {str(e)}")
+            return False
+    
     def send_email(self, to_email, subject, html_body, from_name=None):
         """
-        Send an email via Microsoft Graph API.
+        Send an email via Microsoft Graph API using default service account.
         
         Args:
             to_email: Recipient email address
@@ -114,22 +160,24 @@ class EmailSender:
     def send_fraud_report_email(self, to_email, email_metadata, html_report):
         """
         Send a fraud detection report email using the provided template.
+        Email will be sent FROM the toRecipients address TO the same toRecipients address.
         
         Args:
-            to_email: Recipient email address
+            to_email: Recipient email address (also used as sender)
             email_metadata: Dictionary with email metadata (from JSON file):
+                - from: Original sender email (new format)
                 - subject: Original email subject
-                - receivedDateTime: When the original email was received
+                - receivedDateTime: When the original email was received (ISO or readable format)
                 - bodyPreview: Preview of the original email body
-                - toRecipients: Original recipient(s)
+                - toRecipients: Original recipient(s) - used as both sender and receiver
             html_report: The generated HTML fraud report content
             
         Returns:
             True if successful, False otherwise
         """
         # Extract metadata
-        sender_email = self.user_email  # The sender is the service account
-        received_dt = email_metadata.get("receivedDateTime", "Unknown Date")
+        from_email = email_metadata.get("from", "Unknown Sender")  # Original sender
+        received_dt = parse_email_date(email_metadata.get("receivedDateTime", ""))
         body_preview = email_metadata.get("bodyPreview", "")
         original_subject = email_metadata.get("subject", "Claim Analysis")
         
@@ -147,7 +195,7 @@ class EmailSender:
 <!-- Intro Section -->
 <p style="font-size:14.5px; color:#333333; line-height:1.6;">
 This email was received from
-<strong>{to_email}</strong>
+<strong>{from_email}</strong>
 on <strong>{received_dt}</strong>
 </p>
 
@@ -185,9 +233,40 @@ Analysis Summary
 '''
         
         # Subject line for the email
-        subject = f"Re: {original_subject} - Fraud Analysis Report"
+        subject = f"Re: {original_subject} - Fraud Analysis Report" if original_subject else "Fraud Analysis Report"
         
-        return self.send_email(to_email, subject, email_body)
+        # Send email FROM toRecipients TO toRecipients (same address)
+        return self.send_email_from_user(to_email, to_email, subject, email_body)
+
+
+def parse_email_date(date_str):
+    """
+    Parse email date from either ISO 8601 or readable format.
+    
+    Args:
+        date_str: Date string in ISO format (2026-01-07T07:08:18.000Z) or readable (January 07, 2026)
+        
+    Returns:
+        Formatted date string
+    """
+    if not date_str:
+        return "Unknown Date"
+    
+    try:
+        # Try ISO 8601 format first
+        if 'T' in date_str and ('Z' in date_str or '+' in date_str or date_str.count(':') >= 2):
+            from datetime import datetime
+            # Handle Z suffix or timezone
+            if date_str.endswith('Z'):
+                date_str = date_str[:-1] + '+00:00'
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+        else:
+            # Already in readable format
+            return date_str
+    except:
+        # Fallback to original string
+        return date_str
 
 
 def load_email_metadata(json_path):
@@ -222,7 +301,9 @@ def load_email_metadata(json_path):
             
             metadata = json.loads(content)
             print(f"[DEBUG] Loaded email metadata from: {json_path}")
+            print(f"[DEBUG]   from: {metadata.get('from', 'N/A')}")
             print(f"[DEBUG]   toRecipients: {metadata.get('toRecipients', 'MISSING')}")
+            print(f"[DEBUG]   subject: {metadata.get('subject', 'N/A')}")
             return metadata
         else:
             print(f"[DEBUG] No companion JSON found at: {json_path}")
