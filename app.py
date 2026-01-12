@@ -404,6 +404,9 @@ class FraudDetectionSystem:
             results: Analysis results dictionary
             output_dir: Directory to save output files
             email_metadata: Optional dict from companion JSON for sending email
+                          - Must have 'toRecipients' field with valid email address
+                          - Example: {"toRecipients": "user@example.com", "subject": "...", ...}
+                          - If missing or invalid, email will not be sent (with warning)
         """
         os.makedirs(output_dir, exist_ok=True)
         
@@ -434,16 +437,20 @@ class FraudDetectionSystem:
                 print("⚠ Failed to upload HTML report to OneDrive")
         
         # Send email with HTML report if email metadata is available
-        if self.email_sender and email_metadata:
-            recipient = get_recipient_email(email_metadata)
-            if recipient:
-                print(f"\n📧 Sending fraud report email to: {recipient}")
-                if self.email_sender.send_fraud_report_email(recipient, email_metadata, html_content):
-                    print(f"✓ Email sent successfully to {recipient}")
+        if self.email_sender:
+            if email_metadata:
+                recipient = get_recipient_email(email_metadata)
+                if recipient:
+                    print(f"\n📧 Sending fraud report email to: {recipient}")
+                    if self.email_sender.send_fraud_report_email(recipient, email_metadata, html_content):
+                        print(f"✓ Email sent successfully to {recipient}")
+                    else:
+                        print(f"⚠ Failed to send email to {recipient}")
                 else:
-                    print(f"⚠ Failed to send email to {recipient}")
+                    print("⚠ No recipient email found in companion JSON")
+                    print(f"   Email metadata present but 'toRecipients' is empty or missing")
             else:
-                print("⚠ No recipient email found in companion JSON")
+                print("⚠ No email metadata available (companion JSON not found or invalid)")
         
         return json_path, html_path
 
@@ -812,6 +819,7 @@ def watch_mode():
                             # Load email metadata from companion JSON if it exists
                             json_filename = filename + ".json"
                             json_path = os.path.join(processed_folder, json_filename)
+                            print(f"  Looking for email metadata: {json_path}")
                             email_metadata = load_email_metadata(json_path)
                             
                             # Generate report

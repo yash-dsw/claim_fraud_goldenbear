@@ -27,20 +27,30 @@ def test_email():
     email_sender = EmailSender(tenant_id, client_id, client_secret, user_email)
     print("Email sender initialized")
     
-    # Load email metadata from companion JSON
+    # Load email metadata from companion JSON (fallback to synthetic if missing)
     json_path = "input/C1_JohnDoe_Jetwire.pdf.json"
     email_metadata = load_email_metadata(json_path)
     
     if not email_metadata:
-        print(f"Error: Could not load email metadata from {json_path}")
-        return
+        print(f"Warning: Could not load email metadata from {json_path}. Using synthetic test metadata.")
+        # Allow overriding recipient via env var for direct testing
+        test_recipient = os.getenv("TEST_RECIPIENT_EMAIL")
+        if not test_recipient:
+            print("Error: TEST_RECIPIENT_EMAIL not set in environment. Set it to a valid recipient to test.")
+            return
+        email_metadata = {
+            "subject": "Test Fraud Detection",
+            "receivedDateTime": "2026-01-12T00:00:00Z",
+            "bodyPreview": "This is a synthetic test email preview used to validate Graph sendMail.",
+            "toRecipients": test_recipient,
+        }
     
-    print(f"Email metadata loaded: {email_metadata}")
+    print(f"Email metadata prepared: {email_metadata}")
     
     # Get recipient
     recipient = get_recipient_email(email_metadata)
     if not recipient:
-        print("Error: No recipient email found in JSON")
+        print("Error: No recipient email found in metadata")
         return
     
     print(f"Recipient: {recipient}")

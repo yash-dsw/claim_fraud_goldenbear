@@ -220,12 +220,15 @@ def load_email_metadata(json_path):
             # Also handle any other control characters (ASCII 0-31 except tab and space)
             content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
             
-            return json.loads(content)
+            metadata = json.loads(content)
+            print(f"[DEBUG] Loaded email metadata from: {json_path}")
+            print(f"[DEBUG]   toRecipients: {metadata.get('toRecipients', 'MISSING')}")
+            return metadata
         else:
-            print(f"[WARNING] No companion JSON found: {json_path}")
+            print(f"[DEBUG] No companion JSON found at: {json_path}")
             return {}
     except Exception as e:
-        print(f"[ERROR] Error loading email metadata: {str(e)}")
+        print(f"[ERROR] Error loading email metadata from {json_path}: {str(e)}")
         return {}
 
 
@@ -239,14 +242,26 @@ def get_recipient_email(email_metadata):
     Returns:
         Email address string or None
     """
+    # If no metadata provided, return None
+    if not email_metadata:
+        return None
+        
     to_recipients = email_metadata.get("toRecipients", "")
     
     # Handle if it's a string (single email)
     if isinstance(to_recipients, str):
-        return to_recipients.strip() if to_recipients.strip() else None
+        email = to_recipients.strip() if to_recipients else ""
+        # Validate it looks like an email
+        if email and '@' in email:
+            return email
+        return None
     
     # Handle if it's a list of emails
     if isinstance(to_recipients, list) and len(to_recipients) > 0:
-        return to_recipients[0]
+        first_email = to_recipients[0]
+        if isinstance(first_email, str):
+            email = first_email.strip()
+            if email and '@' in email:
+                return email
     
     return None
