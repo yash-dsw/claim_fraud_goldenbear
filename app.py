@@ -758,102 +758,118 @@ def watch_mode():
                 # Find new files (not yet processed) - check all target files (PDF and JSON)
                 new_target_files = [f for f in target_files if f['name'] not in processed_files]
                 
-                # Separate new PDF files (to be processed) from new JSON files (just download)
+                # Separate new PDF files (to be processed) from new JSON files
                 new_pdf_files = [f for f in new_target_files if f['_file_type'] == 'pdf']
                 new_json_files = [f for f in new_target_files if f['_file_type'] == 'json']
                 
+                # Match PDF-JSON pairs: only process PDFs that have companion JSON files
+                pdf_json_pairs = []
+                for pdf_file in new_pdf_files:
+                    pdf_name = pdf_file['name']
+                    json_name = pdf_name + ".json"
+                    
+                    # Check if companion JSON exists in new files or already processed
+                    json_file = next((f for f in new_json_files if f['name'] == json_name), None)
+                    json_exists = json_file is not None or json_name in processed_files
+                    
+                    if json_exists:
+                        pdf_json_pairs.append({
+                            'pdf': pdf_file,
+                            'json': json_file,  # Can be None if already processed
+                            'pdf_name': pdf_name,
+                            'json_name': json_name
+                        })
+                    else:
+                        print(f"\n⚠ Skipping {pdf_name} - waiting for companion JSON ({json_name})")
+                
                 # Show status every check
-                status_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} PDFs, {len(target_files)} total files, {len(processed_files)} processed, {len(new_target_files)} new"
+                status_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} PDFs, {len(target_files)} total files, {len(processed_files)} processed, {len(pdf_json_pairs)} pairs ready"
                 
                 if is_interactive:
                     print(status_msg, end='\r')
-                elif iteration == 1 or iteration % 60 == 0 or new_target_files:
+                elif iteration == 1 or iteration % 60 == 0 or pdf_json_pairs:
                      # Log less frequently in background mode (every ~10 mins) or when activity occurs
                     print(status_msg)
                 
-                if new_target_files:
-                    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Found {len(new_target_files)} new file(s)")
-                    for f in new_target_files:
-                        file_type_label = 'PDF' if f['_file_type'] == 'pdf' else 'JSON'
-                        print(f"  - {f['name']} ({file_type_label})")
+                if pdf_json_pairs:
+                    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Found {len(pdf_json_pairs)} PDF-JSON pair(s) ready to process")
+                    for pair in pdf_json_pairs:
+                        print(f"  - {pair['pdf_name']} + {pair['json_name']}")
                 
-                # First, download and save any new JSON files (just save, don't process)
-                for file_info in new_json_files:
-                    filename = file_info['name']
+                # Process PDF-JSON pairs together
+                for pair in pdf_json_pairs:
+                    pdf_file_info = pair['pdf']
+                    json_file_info = pair['json']
+                    pdf_filename = pair['pdf_name']
+                    json_filename = pair['json_name']
                     
-                    print(f"\n📥 Downloading companion JSON: {filename}")
+                    temp_pdf_path = None
+                    
+                    print(f"\n{'='*70}")
+                    print(f"📦 Processing pair: {pdf_filename} + {json_filename}")
+                    print(f"{'='*70}")
                     
                     try:
-                        # Download JSON file directly to input folder
-                        json_path = onedrive.download_file(file_info, local_dir=processed_folder)
-                        print(f"✓ JSON saved to: {json_path}")
+                        # Download JSON first if not already downloaded
+                        json_path = os.path.join(processed_folder, json_filename)
+                        if json_file_info:  # JSON is new, need to download
+                            print(f"\n📥 Downloading companion JSON: {json_filename}")
+                            json_path = onedrive.download_file(json_file_info, local_dir=processed_folder)
+                            print(f"✓ JSON saved to: {json_path}")
+                            processed_files.add(json_filename)
+                        else:
+                            print(f"✓ Using existing JSON: {json_filename}")
                         
-                        # Mark as processed
-                        processed_files.add(filename)
+                        # Download PDF
+                        print(f"\n📥 Downloading PDF: {pdf_filename}")
+                        temp_pdf_path = onedrive.download_file(pdf_file_info, local_dir="temp_download")
+                        print(f"✓ PDF downloaded")
                         
-                    except Exception as e:
-                        print(f"✗ Error downloading {filename}: {str(e)}")
-                        # Still mark as processed to avoid retry loop
-                        processed_files.add(filename)
-                
-                # Process new PDF files
-                for file_info in new_pdf_files:
-                    filename = file_info['name']
-                    temp_path = None
-                    
-                    print(f"\n📥 Downloading: {filename}")
-                    
-                    try:
-                        # Download file to temporary location
-                        temp_path = onedrive.download_file(file_info, local_dir="temp_download")
+                        # Load email metadata before processing
+                        print(f"\n📧 Loading email metadata from: {json_path}")
+                        email_metadata = load_email_metadata(json_path)
                         
-                        print(f"✓ Downloaded")
-                        print(f"\n🔍 Processing: {filename}")
-                        
-                        # Process the file
-                        results = fraud_system.analyze_claim(temp_path)
+                        # Process the PDF
+                        print(f"\n🔍 Processing claim: {pdf_filename}")
+                        results = fraud_system.analyze_claim(temp_pdf_path)
                         
                         if "error" in results:
                             print(f"\n✗ Analysis failed: {results['error']}")
                         else:
-                            # Load email metadata from companion JSON if it exists
-                            json_filename = filename + ".json"
-                            json_path = os.path.join(processed_folder, json_filename)
-                            print(f"  Looking for email metadata: {json_path}")
-                            email_metadata = load_email_metadata(json_path)
-                            
-                            # Generate report
+                            # Generate report and save with email metadata
                             fraud_system.generate_report(results, output_format="console")
                             fraud_system.save_results(results, email_metadata=email_metadata)
-                            print(f"\n✓ Analysis complete for {filename}!")
+                            print(f"\n✓ Analysis complete for {pdf_filename}!")
                         
-                        # Move file to processed folder
-                        destination = os.path.join(processed_folder, filename)
+                        # Move PDF to processed folder
+                        destination = os.path.join(processed_folder, pdf_filename)
                         
                         # Handle duplicate filenames
                         counter = 1
-                        base_name, ext = os.path.splitext(filename)
+                        base_name, ext = os.path.splitext(pdf_filename)
                         while os.path.exists(destination):
                             destination = os.path.join(processed_folder, 
                                                      f"{base_name}_{counter}{ext}")
                             counter += 1
                         
-                        os.rename(temp_path, destination)
-                        print(f"✓ Saved to: {destination}")
+                        os.rename(temp_pdf_path, destination)
+                        print(f"✓ PDF saved to: {destination}")
                         
-                        # Mark as processed
-                        processed_files.add(filename)
+                        # Mark PDF as processed
+                        processed_files.add(pdf_filename)
                         
                     except Exception as e:
-                        print(f"✗ Error processing {filename}: {str(e)}")
+                        print(f"✗ Error processing pair {pdf_filename}: {str(e)}")
                         # Clean up temp file if it exists
-                        if temp_path and os.path.exists(temp_path):
+                        if temp_pdf_path and os.path.exists(temp_pdf_path):
                             try:
-                                os.remove(temp_path)
+                                os.remove(temp_pdf_path)
                             except:
                                 pass
                         # Still mark as processed to avoid reprocessing
-                        processed_files.add(filename)
+                        processed_files.add(pdf_filename)
+                        if json_file_info:
+                            processed_files.add(json_filename)
                 
             except Exception as e:
                 print(f"\n✗ Error checking OneDrive: {str(e)}")
