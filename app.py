@@ -290,6 +290,49 @@ class FraudDetectionSystem:
         
         return text
     
+    def _generate_pdf_from_html(self, html_content, pdf_path):
+        """
+        Generate a PDF from HTML content using Playwright.
+        This renders the HTML exactly like browser's Ctrl+P print-to-PDF.
+        
+        Args:
+            html_content: The HTML string to convert
+            pdf_path: Path where the PDF should be saved
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+            
+            with sync_playwright() as p:
+                # Launch headless Chromium
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                
+                # Load the HTML content
+                page.set_content(html_content, wait_until='networkidle')
+                
+                # Generate PDF with settings that match browser's Ctrl+P
+                page.pdf(
+                    path=pdf_path,
+                    format='A4',
+                    print_background=True,  # Include background colors/images
+                    margin={
+                        'top': '10mm',
+                        'bottom': '10mm',
+                        'left': '10mm',
+                        'right': '10mm'
+                    }
+                )
+                
+                browser.close()
+                return True
+                
+        except Exception as e:
+            print(f"⚠ Error generating PDF: {str(e)}")
+            return False
+    
     def _generate_html_report(self, results):
         """Generate an HTML report."""
         # Format executive summary
@@ -397,7 +440,7 @@ class FraudDetectionSystem:
 """
         return html
     
-    def save_results(self, results, output_dir="output", email_metadata=None):
+    def save_results(self, results, output_dir="output", email_metadata=None, input_pdf_path=None):
         """Save results to files and optionally send email.
         
         Args:
@@ -407,6 +450,7 @@ class FraudDetectionSystem:
                           - Must have 'toRecipients' field with valid email address
                           - Example: {"toRecipients": "user@example.com", "subject": "...", ...}
                           - If missing or invalid, email will not be sent (with warning)
+            input_pdf_path: Optional path to the original claim PDF (for email attachment)
         """
         os.makedirs(output_dir, exist_ok=True)
         
@@ -425,9 +469,19 @@ class FraudDetectionSystem:
             f.write(html_content)
         print(f"✓ HTML report saved: {html_path}")
         
-        # Upload HTML to OneDrive if enabled
+        # Save PDF (rendered from HTML using Playwright - looks exactly like browser's Ctrl+P)
+        pdf_path = os.path.join(output_dir, f"fraud_report_{timestamp}.pdf")
+        if self._generate_pdf_from_html(html_content, pdf_path):
+            print(f"✓ PDF report saved: {pdf_path}")
+        else:
+            pdf_path = None
+            print("⚠ PDF generation failed, continuing without PDF")
+        
+        # Upload HTML and PDF to OneDrive if enabled
         if self.onedrive_client:
-            print("\n📤 Uploading HTML report to OneDrive...")
+            print("\n📤 Uploading reports to OneDrive...")
+            
+            # Upload HTML
             upload_result = self.onedrive_client.upload_file(html_path, self.onedrive_output_folder)
             if upload_result:
                 print(f"✓ HTML report uploaded to OneDrive: {upload_result['name']}")
@@ -435,6 +489,16 @@ class FraudDetectionSystem:
                     print(f"  View online: {upload_result['web_url']}")
             else:
                 print("⚠ Failed to upload HTML report to OneDrive")
+            
+            # Upload PDF if generated
+            if pdf_path:
+                upload_result = self.onedrive_client.upload_file(pdf_path, self.onedrive_output_folder)
+                if upload_result:
+                    print(f"✓ PDF report uploaded to OneDrive: {upload_result['name']}")
+                    if upload_result.get('web_url'):
+                        print(f"  View online: {upload_result['web_url']}")
+                else:
+                    print("⚠ Failed to upload PDF report to OneDrive")
         
         # Send email with HTML report if email metadata is available
         if self.email_sender:
@@ -442,7 +506,11 @@ class FraudDetectionSystem:
                 recipient = get_recipient_email(email_metadata)
                 if recipient:
                     print(f"\n📧 Sending fraud report email to: {recipient}")
-                    if self.email_sender.send_fraud_report_email(recipient, email_metadata, html_content):
+                    if self.email_sender.send_fraud_report_email(
+                        recipient, email_metadata, html_content,
+                        input_pdf_path=input_pdf_path,
+                        output_pdf_path=pdf_path
+                    ):
                         print(f"✓ Email sent successfully to {recipient}")
                     else:
                         print(f"⚠ Failed to send email to {recipient}")
@@ -452,7 +520,7 @@ class FraudDetectionSystem:
             else:
                 print("⚠ No email metadata available (companion JSON not found or invalid)")
         
-        return json_path, html_path
+        return json_path, html_path, pdf_path
 
 
 def run_single_pass(claim_file_arg=None):
@@ -623,7 +691,7 @@ def run_single_pass(claim_file_arg=None):
         email_metadata = load_email_metadata(json_path)
         
         # Save results and send email
-        fraud_system.save_results(results, email_metadata=email_metadata)
+        fraud_system.save_results(results, email_metadata=email_metadata, input_pdf_path=claim_file)
         
         print(f"\n✓ Analysis complete for {os.path.basename(claim_file)}!")
     
@@ -838,7 +906,7 @@ def watch_mode():
                         else:
                             # Generate report and save with email metadata
                             fraud_system.generate_report(results, output_format="console")
-                            fraud_system.save_results(results, email_metadata=email_metadata)
+                            fraud_system.save_results(results, email_metadata=email_metadata, input_pdf_path=temp_pdf_path)
                             print(f"\n✓ Analysis complete for {pdf_filename}!")
                         
                         # Move PDF to processed folder

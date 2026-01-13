@@ -4,4 +4,4 @@ python-dotenv
 openai
 requests
 msal
-weasyprint
+playwright

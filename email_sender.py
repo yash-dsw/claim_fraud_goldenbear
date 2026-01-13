@@ -157,7 +157,50 @@ class EmailSender:
             print(f"[ERROR] Error sending email: {str(e)}")
             return False
     
-    def send_fraud_report_email(self, to_email, email_metadata, html_report):
+    def _encode_file_attachment(self, file_path):
+        """
+        Encode a file as base64 for Microsoft Graph API attachment.
+        
+        Args:
+            file_path: Path to the file to attach
+            
+        Returns:
+            Dictionary with attachment data for Graph API, or None if error
+        """
+        import base64
+        
+        try:
+            if not os.path.exists(file_path):
+                print(f"[WARNING] Attachment file not found: {file_path}")
+                return None
+            
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            file_name = os.path.basename(file_path)
+            content_bytes = base64.b64encode(file_content).decode('utf-8')
+            
+            # Determine content type based on extension
+            ext = os.path.splitext(file_name)[1].lower()
+            content_type_map = {
+                '.pdf': 'application/pdf',
+                '.html': 'text/html',
+                '.json': 'application/json',
+                '.txt': 'text/plain'
+            }
+            content_type = content_type_map.get(ext, 'application/octet-stream')
+            
+            return {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": file_name,
+                "contentType": content_type,
+                "contentBytes": content_bytes
+            }
+        except Exception as e:
+            print(f"[ERROR] Error encoding attachment {file_path}: {str(e)}")
+            return None
+    
+    def send_fraud_report_email(self, to_email, email_metadata, html_report, input_pdf_path=None, output_pdf_path=None):
         """
         Send a fraud detection report email using the provided template.
         Email will be sent FROM the toRecipients address TO the same toRecipients address.
@@ -171,6 +214,8 @@ class EmailSender:
                 - bodyPreview: Preview of the original email body
                 - toRecipients: Original recipient(s) - used as both sender and receiver
             html_report: The generated HTML fraud report content
+            input_pdf_path: Optional path to the original claim PDF to attach
+            output_pdf_path: Optional path to the generated fraud report PDF to attach
             
         Returns:
             True if successful, False otherwise
@@ -213,7 +258,7 @@ Along with the attached information, the request has been reviewed and the corre
 </p>
 
 <p style="font-size:14.5px; color:#333333; line-height:1.6; margin-bottom:24px;">
-Please find the processed result outlined
+Please find the processed result and attachments below.
 </p>
 
 <!-- Report Output Section -->
@@ -235,8 +280,73 @@ Analysis Summary
         # Subject line for the email
         subject = f"Re: {original_subject} - Fraud Analysis Report" if original_subject else "Fraud Analysis Report"
         
-        # Send email FROM toRecipients TO toRecipients (same address)
-        return self.send_email_from_user(to_email, to_email, subject, email_body)
+        # Build attachments list
+        attachments = []
+        if input_pdf_path:
+            attachment = self._encode_file_attachment(input_pdf_path)
+            if attachment:
+                attachments.append(attachment)
+                print(f"  📎 Attaching input PDF: {os.path.basename(input_pdf_path)}")
+        
+        if output_pdf_path:
+            attachment = self._encode_file_attachment(output_pdf_path)
+            if attachment:
+                attachments.append(attachment)
+                print(f"  📎 Attaching output PDF: {os.path.basename(output_pdf_path)}")
+        
+        # Send email FROM toRecipients TO toRecipients (same address) with attachments
+        return self.send_email_with_attachments(to_email, to_email, subject, email_body, attachments)
+    
+    def send_email_with_attachments(self, sender_email, to_email, subject, html_body, attachments=None):
+        """
+        Send an email with attachments from a specific user via Microsoft Graph API.
+        
+        Args:
+            sender_email: Email address to send FROM
+            to_email: Recipient email address
+            subject: Email subject
+            html_body: HTML content of the email
+            attachments: List of attachment dictionaries for Graph API
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        url = f"https://graph.microsoft.com/v1.0/users/{sender_email}/sendMail"
+        
+        email_payload = {
+            "message": {
+                "subject": subject,
+                "body": {
+                    "contentType": "HTML",
+                    "content": html_body
+                },
+                "toRecipients": [
+                    {
+                        "emailAddress": {
+                            "address": to_email
+                        }
+                    }
+                ]
+            },
+            "saveToSentItems": True
+        }
+        
+        # Add attachments if provided
+        if attachments:
+            email_payload["message"]["attachments"] = attachments
+        
+        try:
+            response = requests.post(url, headers=self._get_headers(), json=email_payload)
+            
+            if response.status_code == 202:
+                return True
+            else:
+                print(f"[ERROR] Failed to send email: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"[ERROR] Error sending email: {str(e)}")
+            return False
 
 
 def parse_email_date(date_str):

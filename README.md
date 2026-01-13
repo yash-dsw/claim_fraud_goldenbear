@@ -39,6 +39,7 @@ python -m venv venv
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
 
 3. Configure AI API key (optional):
