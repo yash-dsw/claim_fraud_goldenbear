@@ -19,7 +19,7 @@ from rules import RuleBasedDetector
 from agent import AgentDetector, MockAgentDetector
 from policy_db import PolicyDatabase
 from onedrive_client_app import OneDriveClientApp
-from email_sender import EmailSender, load_email_metadata, get_recipient_email
+# from email_sender import EmailSender, load_email_metadata, get_recipient_email
 
 
 class FraudDetectionSystem:
@@ -52,7 +52,7 @@ class FraudDetectionSystem:
         # Initialize OneDrive client and Email sender if enabled
         self.onedrive_client = None
         self.onedrive_output_folder = None
-        self.email_sender = None
+        # self.email_sender = None
         if os.getenv("ONEDRIVE_ENABLED", "0") == "1":
             tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
             client_id = os.getenv("ONEDRIVE_CLIENT_ID")
@@ -68,10 +68,10 @@ class FraudDetectionSystem:
                 print(f"✓ OneDrive upload enabled (folder: {self.onedrive_output_folder})")
                 
                 # Initialize email sender (shares credentials with OneDrive)
-                self.email_sender = EmailSender(
-                    tenant_id, client_id, client_secret, user_email
-                )
-                print(f"✓ Email notifications enabled (sender: {user_email})")
+                # self.email_sender = EmailSender(
+                #     tenant_id, client_id, client_secret, user_email
+                # )
+                # print(f"✓ Email notifications enabled (sender: {user_email})")
     
     def analyze_claim(self, claim_pdf_path):
         """
@@ -454,23 +454,30 @@ class FraudDetectionSystem:
         """
         os.makedirs(output_dir, exist_ok=True)
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Generate output filename based on input PDF name
+        if input_pdf_path:
+            base_name = os.path.splitext(os.path.basename(input_pdf_path))[0]
+            output_base_name = f"{base_name}_claimfraud_report"
+        else:
+            # Fallback to timestamp if no input path provided
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_base_name = f"fraud_report_{timestamp}"
         
         # Save JSON
-        json_path = os.path.join(output_dir, f"fraud_report_{timestamp}.json")
+        json_path = os.path.join(output_dir, f"{output_base_name}.json")
         with open(json_path, 'w') as f:
             json.dump(results, f, indent=2)
         print(f"✓ JSON report saved: {json_path}")
         
         # Save HTML
-        html_path = os.path.join(output_dir, f"fraud_report_{timestamp}.html")
+        html_path = os.path.join(output_dir, f"{output_base_name}.html")
         html_content = self._generate_html_report(results)
         with open(html_path, 'w') as f:
             f.write(html_content)
         print(f"✓ HTML report saved: {html_path}")
         
         # Save PDF (rendered from HTML using Playwright - looks exactly like browser's Ctrl+P)
-        pdf_path = os.path.join(output_dir, f"fraud_report_{timestamp}.pdf")
+        pdf_path = os.path.join(output_dir, f"{output_base_name}.pdf")
         if self._generate_pdf_from_html(html_content, pdf_path):
             print(f"✓ PDF report saved: {pdf_path}")
         else:
@@ -500,25 +507,25 @@ class FraudDetectionSystem:
                 else:
                     print("⚠ Failed to upload PDF report to OneDrive")
         
-        # Send email with HTML report if email metadata is available
-        if self.email_sender:
-            if email_metadata:
-                recipient = get_recipient_email(email_metadata)
-                if recipient:
-                    print(f"\n📧 Sending fraud report email to: {recipient}")
-                    if self.email_sender.send_fraud_report_email(
-                        recipient, email_metadata, html_content,
-                        input_pdf_path=input_pdf_path,
-                        output_pdf_path=pdf_path
-                    ):
-                        print(f"✓ Email sent successfully to {recipient}")
-                    else:
-                        print(f"⚠ Failed to send email to {recipient}")
-                else:
-                    print("⚠ No recipient email found in companion JSON")
-                    print(f"   Email metadata present but 'toRecipients' is empty or missing")
-            else:
-                print("⚠ No email metadata available (companion JSON not found or invalid)")
+        # # Send email with HTML report if email metadata is available
+        # if self.email_sender:
+        #     if email_metadata:
+        #         recipient = get_recipient_email(email_metadata)
+        #         if recipient:
+        #             print(f"\n📧 Sending fraud report email to: {recipient}")
+        #             if self.email_sender.send_fraud_report_email(
+        #                 recipient, email_metadata, html_content,
+        #                 input_pdf_path=input_pdf_path,
+        #                 output_pdf_path=pdf_path
+        #             ):
+        #                 print(f"✓ Email sent successfully to {recipient}")
+        #             else:
+        #                 print(f"⚠ Failed to send email to {recipient}")
+        #         else:
+        #             print("⚠ No recipient email found in companion JSON")
+        #             print(f"   Email metadata present but 'toRecipients' is empty or missing")
+        #     else:
+        #         print("⚠ No email metadata available (companion JSON not found or invalid)")
         
         return json_path, html_path, pdf_path
 
@@ -686,12 +693,12 @@ def run_single_pass(claim_file_arg=None):
         # Generate and display report
         fraud_system.generate_report(results, output_format="console")
         
-        # Load email metadata from companion JSON if it exists
-        json_path = claim_file + ".json"
-        email_metadata = load_email_metadata(json_path)
+        # # Load email metadata from companion JSON if it exists
+        # json_path = claim_file + ".json"
+        # email_metadata = load_email_metadata(json_path)
         
-        # Save results and send email
-        fraud_system.save_results(results, email_metadata=email_metadata, input_pdf_path=claim_file)
+        # Save results (email sending disabled)
+        fraud_system.save_results(results, email_metadata=None, input_pdf_path=claim_file)
         
         print(f"\n✓ Analysis complete for {os.path.basename(claim_file)}!")
     
@@ -878,62 +885,46 @@ def watch_mode():
                     print(f"{'='*70}")
                     
                     try:
-                        # Download JSON first if not already downloaded
+                        # Download both files simultaneously to input folder before processing
+                        print(f"\n📥 Downloading files to input folder...")
+                        
+                        # Download JSON if not already downloaded
                         json_path = os.path.join(processed_folder, json_filename)
                         if json_file_info:  # JSON is new, need to download
-                            print(f"\n📥 Downloading companion JSON: {json_filename}")
+                            print(f"   Downloading: {json_filename}")
                             json_path = onedrive.download_file(json_file_info, local_dir=processed_folder)
-                            print(f"✓ JSON saved to: {json_path}")
+                            print(f"   ✓ JSON saved: {json_path}")
                             processed_files.add(json_filename)
                         else:
-                            print(f"✓ Using existing JSON: {json_filename}")
+                            print(f"   ✓ Using existing JSON: {json_filename}")
                         
-                        # Download PDF
-                        print(f"\n📥 Downloading PDF: {pdf_filename}")
-                        temp_pdf_path = onedrive.download_file(pdf_file_info, local_dir="temp_download")
-                        print(f"✓ PDF downloaded")
+                        # Download PDF directly to input folder
+                        pdf_path = os.path.join(processed_folder, pdf_filename)
+                        print(f"   Downloading: {pdf_filename}")
+                        pdf_path = onedrive.download_file(pdf_file_info, local_dir=processed_folder)
+                        print(f"   ✓ PDF saved: {pdf_path}")
                         
-                        # Load email metadata before processing
-                        print(f"\n📧 Loading email metadata from: {json_path}")
-                        email_metadata = load_email_metadata(json_path)
+                        # # Load email metadata before processing
+                        # print(f"\n📧 Loading email metadata from: {json_path}")
+                        # email_metadata = load_email_metadata(json_path)
                         
                         # Process the PDF
                         print(f"\n🔍 Processing claim: {pdf_filename}")
-                        results = fraud_system.analyze_claim(temp_pdf_path)
+                        results = fraud_system.analyze_claim(pdf_path)
                         
                         if "error" in results:
                             print(f"\n✗ Analysis failed: {results['error']}")
                         else:
-                            # Generate report and save with email metadata
+                            # Generate report and save (email sending disabled)
                             fraud_system.generate_report(results, output_format="console")
-                            fraud_system.save_results(results, email_metadata=email_metadata, input_pdf_path=temp_pdf_path)
+                            fraud_system.save_results(results, email_metadata=None, input_pdf_path=pdf_path)
                             print(f"\n✓ Analysis complete for {pdf_filename}!")
-                        
-                        # Move PDF to processed folder
-                        destination = os.path.join(processed_folder, pdf_filename)
-                        
-                        # Handle duplicate filenames
-                        counter = 1
-                        base_name, ext = os.path.splitext(pdf_filename)
-                        while os.path.exists(destination):
-                            destination = os.path.join(processed_folder, 
-                                                     f"{base_name}_{counter}{ext}")
-                            counter += 1
-                        
-                        os.rename(temp_pdf_path, destination)
-                        print(f"✓ PDF saved to: {destination}")
                         
                         # Mark PDF as processed
                         processed_files.add(pdf_filename)
                         
                     except Exception as e:
                         print(f"✗ Error processing pair {pdf_filename}: {str(e)}")
-                        # Clean up temp file if it exists
-                        if temp_pdf_path and os.path.exists(temp_pdf_path):
-                            try:
-                                os.remove(temp_pdf_path)
-                            except:
-                                pass
                         # Still mark as processed to avoid reprocessing
                         processed_files.add(pdf_filename)
                         if json_file_info:
