@@ -278,7 +278,7 @@ Analysis Summary
 '''
         
         # Subject line for the email
-        subject = f"Re: {original_subject} - Fraud Analysis Report" if original_subject else "Fraud Analysis Report"
+        subject = f"{original_subject} - Fraud Analysis Report" if original_subject else "Fraud Analysis Report"
         
         # Build attachments list
         attachments = []

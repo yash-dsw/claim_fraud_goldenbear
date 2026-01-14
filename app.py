@@ -459,7 +459,7 @@ class FraudDetectionSystem:
         # Generate output filename based on input PDF name
         if input_pdf_path:
             base_name = os.path.splitext(os.path.basename(input_pdf_path))[0]
-            output_base_name = f"{base_name}_claimfraud_report"
+            output_base_name = f"{base_name}_report"
         else:
             # Fallback to timestamp if no input path provided
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
