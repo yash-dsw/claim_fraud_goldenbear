@@ -19,7 +19,7 @@ from rules import RuleBasedDetector
 from agent import AgentDetector, MockAgentDetector
 from policy_db import PolicyDatabase
 from onedrive_client_app import OneDriveClientApp
-# from email_sender import EmailSender, load_email_metadata, get_recipient_email
+from email_sender import EmailSender, load_email_metadata, get_recipient_email
 
 
 class FraudDetectionSystem:
@@ -52,7 +52,8 @@ class FraudDetectionSystem:
         # Initialize OneDrive client and Email sender if enabled
         self.onedrive_client = None
         self.onedrive_output_folder = None
-        # self.email_sender = None
+        self.onedrive_processed_folder = None
+        self.email_sender = None
         if os.getenv("ONEDRIVE_ENABLED", "0") == "1":
             tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
             client_id = os.getenv("ONEDRIVE_CLIENT_ID")
@@ -60,6 +61,7 @@ class FraudDetectionSystem:
             user_email = os.getenv("ONEDRIVE_USER_EMAIL")
             input_folder = os.getenv("ONEDRIVE_FOLDER_NAME", "Input_attachments")
             self.onedrive_output_folder = os.getenv("ONEDRIVE_OUTPUT_FOLDER", "Output_attachments")
+            self.onedrive_processed_folder = os.getenv("ONEDRIVE_PROCESSED_INPUTS", "Processed_inputs")
             
             if all([tenant_id, client_id, client_secret, user_email]):
                 self.onedrive_client = OneDriveClientApp(
@@ -68,10 +70,10 @@ class FraudDetectionSystem:
                 print(f"✓ OneDrive upload enabled (folder: {self.onedrive_output_folder})")
                 
                 # Initialize email sender (shares credentials with OneDrive)
-                # self.email_sender = EmailSender(
-                #     tenant_id, client_id, client_secret, user_email
-                # )
-                # print(f"✓ Email notifications enabled (sender: {user_email})")
+                self.email_sender = EmailSender(
+                    tenant_id, client_id, client_secret, user_email
+                )
+                print(f"✓ Email notifications enabled (sender: {user_email})")
     
     def analyze_claim(self, claim_pdf_path):
         """
@@ -507,25 +509,25 @@ class FraudDetectionSystem:
                 else:
                     print("⚠ Failed to upload PDF report to OneDrive")
         
-        # # Send email with HTML report if email metadata is available
-        # if self.email_sender:
-        #     if email_metadata:
-        #         recipient = get_recipient_email(email_metadata)
-        #         if recipient:
-        #             print(f"\n📧 Sending fraud report email to: {recipient}")
-        #             if self.email_sender.send_fraud_report_email(
-        #                 recipient, email_metadata, html_content,
-        #                 input_pdf_path=input_pdf_path,
-        #                 output_pdf_path=pdf_path
-        #             ):
-        #                 print(f"✓ Email sent successfully to {recipient}")
-        #             else:
-        #                 print(f"⚠ Failed to send email to {recipient}")
-        #         else:
-        #             print("⚠ No recipient email found in companion JSON")
-        #             print(f"   Email metadata present but 'toRecipients' is empty or missing")
-        #     else:
-        #         print("⚠ No email metadata available (companion JSON not found or invalid)")
+        # Send email with HTML report if email metadata is available
+        if self.email_sender:
+            if email_metadata:
+                recipient = get_recipient_email(email_metadata)
+                if recipient:
+                    print(f"\n📧 Sending fraud report email to: {recipient}")
+                    if self.email_sender.send_fraud_report_email(
+                        recipient, email_metadata, html_content,
+                        input_pdf_path=input_pdf_path,
+                        output_pdf_path=pdf_path
+                    ):
+                        print(f"✓ Email sent successfully to {recipient}")
+                    else:
+                        print(f"⚠ Failed to send email to {recipient}")
+                else:
+                    print("⚠ No recipient email found in companion JSON")
+                    print(f"   Email metadata present but 'toRecipients' is empty or missing")
+            else:
+                print("⚠ No email metadata available (companion JSON not found or invalid)")
         
         return json_path, html_path, pdf_path
 
@@ -693,12 +695,25 @@ def run_single_pass(claim_file_arg=None):
         # Generate and display report
         fraud_system.generate_report(results, output_format="console")
         
-        # # Load email metadata from companion JSON if it exists
-        # json_path = claim_file + ".json"
-        # email_metadata = load_email_metadata(json_path)
+        # Load email metadata from companion JSON if it exists
+        json_path = claim_file + ".json"
+        email_metadata = load_email_metadata(json_path)
         
-        # Save results (email sending disabled)
-        fraud_system.save_results(results, email_metadata=None, input_pdf_path=claim_file)
+        # Save results and send email if metadata available
+        fraud_system.save_results(results, email_metadata=email_metadata, input_pdf_path=claim_file)
+        
+        # Delete processed files from input folder
+        try:
+            # Delete PDF
+            os.remove(claim_file)
+            print(f"   ✓ Deleted local PDF: {os.path.basename(claim_file)}")
+            
+            # Delete companion JSON if exists
+            if os.path.exists(json_path):
+                os.remove(json_path)
+                print(f"   ✓ Deleted local JSON: {os.path.basename(json_path)}")
+        except Exception as del_error:
+            print(f"   ⚠ Warning: Failed to delete local files: {del_error}")
         
         print(f"\n✓ Analysis complete for {os.path.basename(claim_file)}!")
     
@@ -830,12 +845,9 @@ def watch_mode():
                 # Separate into PDF files (for processing) and all target files (for tracking)
                 pdf_files = [f for f in target_files if f['_file_type'] == 'pdf']
                 
-                # Find new files (not yet processed) - check all target files (PDF and JSON)
-                new_target_files = [f for f in target_files if f['name'] not in processed_files]
-                
-                # Separate new PDF files (to be processed) from new JSON files
-                new_pdf_files = [f for f in new_target_files if f['_file_type'] == 'pdf']
-                new_json_files = [f for f in new_target_files if f['_file_type'] == 'json']
+                # Separate PDF files from JSON files
+                new_pdf_files = [f for f in target_files if f['_file_type'] == 'pdf']
+                new_json_files = [f for f in target_files if f['_file_type'] == 'json']
                 
                 # Match PDF-JSON pairs: only process PDFs that have companion JSON files
                 pdf_json_pairs = []
@@ -843,14 +855,13 @@ def watch_mode():
                     pdf_name = pdf_file['name']
                     json_name = pdf_name + ".json"
                     
-                    # Check if companion JSON exists in new files or already processed
+                    # Check if companion JSON exists in files
                     json_file = next((f for f in new_json_files if f['name'] == json_name), None)
-                    json_exists = json_file is not None or json_name in processed_files
                     
-                    if json_exists:
+                    if json_file:
                         pdf_json_pairs.append({
                             'pdf': pdf_file,
-                            'json': json_file,  # Can be None if already processed
+                            'json': json_file,
                             'pdf_name': pdf_name,
                             'json_name': json_name
                         })
@@ -858,7 +869,7 @@ def watch_mode():
                         print(f"\n⚠ Skipping {pdf_name} - waiting for companion JSON ({json_name})")
                 
                 # Show status every check
-                status_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} PDFs, {len(target_files)} total files, {len(processed_files)} processed, {len(pdf_json_pairs)} pairs ready"
+                status_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(pdf_files)} PDFs, {len(target_files)} total files, {len(pdf_json_pairs)} pairs ready"
                 
                 if is_interactive:
                     print(status_msg, end='\r')
@@ -894,7 +905,6 @@ def watch_mode():
                             print(f"   Downloading: {json_filename}")
                             json_path = onedrive.download_file(json_file_info, local_dir=processed_folder)
                             print(f"   ✓ JSON saved: {json_path}")
-                            processed_files.add(json_filename)
                         else:
                             print(f"   ✓ Using existing JSON: {json_filename}")
                         
@@ -904,9 +914,9 @@ def watch_mode():
                         pdf_path = onedrive.download_file(pdf_file_info, local_dir=processed_folder)
                         print(f"   ✓ PDF saved: {pdf_path}")
                         
-                        # # Load email metadata before processing
-                        # print(f"\n📧 Loading email metadata from: {json_path}")
-                        # email_metadata = load_email_metadata(json_path)
+                        # Load email metadata before processing
+                        print(f"\n📧 Loading email metadata from: {json_path}")
+                        email_metadata = load_email_metadata(json_path)
                         
                         # Process the PDF
                         print(f"\n🔍 Processing claim: {pdf_filename}")
@@ -915,20 +925,41 @@ def watch_mode():
                         if "error" in results:
                             print(f"\n✗ Analysis failed: {results['error']}")
                         else:
-                            # Generate report and save (email sending disabled)
+                            # Generate report and send email
                             fraud_system.generate_report(results, output_format="console")
-                            fraud_system.save_results(results, email_metadata=None, input_pdf_path=pdf_path)
+                            fraud_system.save_results(results, email_metadata=email_metadata, input_pdf_path=pdf_path)
                             print(f"\n✓ Analysis complete for {pdf_filename}!")
                         
-                        # Mark PDF as processed
-                        processed_files.add(pdf_filename)
+                        # Delete processed local files from input folder
+                        try:
+                            # Delete PDF
+                            os.remove(pdf_path)
+                            print(f"   ✓ Deleted local PDF: {pdf_filename}")
+                            
+                            # Delete JSON
+                            if os.path.exists(json_path):
+                                os.remove(json_path)
+                                print(f"   ✓ Deleted local JSON: {json_filename}")
+                        except Exception as del_error:
+                            print(f"   ⚠ Warning: Failed to delete local files: {del_error}")
+                        
+                        # Move both PDF and JSON to processed folder on OneDrive
+                        processed_folder_name = fraud_system.onedrive_processed_folder
+                        print(f"\n📋 Moving files to {processed_folder_name} on OneDrive...")
+                        try:
+                            # Move PDF file
+                            if onedrive.move_file(pdf_file_info['id'], processed_folder_name):
+                                print(f"   ✓ Moved PDF to {processed_folder_name}: {pdf_filename}")
+                            
+                            # Move companion JSON file if it exists
+                            if json_file_info:
+                                if onedrive.move_file(json_file_info['id'], processed_folder_name):
+                                    print(f"   ✓ Moved JSON to {processed_folder_name}: {json_filename}")
+                        except Exception as move_error:
+                            print(f"   ⚠ Warning: Failed to move files on OneDrive: {move_error}")
                         
                     except Exception as e:
                         print(f"✗ Error processing pair {pdf_filename}: {str(e)}")
-                        # Still mark as processed to avoid reprocessing
-                        processed_files.add(pdf_filename)
-                        if json_file_info:
-                            processed_files.add(json_filename)
                 
             except Exception as e:
                 print(f"\n✗ Error checking OneDrive: {str(e)}")

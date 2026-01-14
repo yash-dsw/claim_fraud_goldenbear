@@ -287,6 +287,60 @@ class OneDriveClientApp:
                 
         except Exception as e:
             raise Exception(f"Failed to delete file: {str(e)}")
+    
+    def move_file(self, file_id, destination_folder_name):
+        """Move a file to a different OneDrive folder.
+        
+        Args:
+            file_id: The ID of the file to move
+            destination_folder_name: Name of the destination folder
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Ensure destination folder exists
+            folder_id = self._create_folder_if_not_exists(destination_folder_name)
+            
+            if not folder_id:
+                raise Exception(f"Could not access or create folder '{destination_folder_name}'")
+            
+            # Get file info to check name
+            file_info_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{file_id}"
+            response = requests.get(file_info_url, headers=self._get_headers())
+            response.raise_for_status()
+            file_info = response.json()
+            file_name = file_info.get('name')
+            
+            # Check if file with same name exists in destination folder
+            check_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{folder_id}/children"
+            response = requests.get(check_url, headers=self._get_headers())
+            response.raise_for_status()
+            existing_files = response.json().get('value', [])
+            
+            # Delete existing file with same name if found
+            for existing_file in existing_files:
+                if existing_file.get('name') == file_name:
+                    delete_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{existing_file['id']}"
+                    requests.delete(delete_url, headers=self._get_headers())
+                    break
+            
+            # Move the file using PATCH request
+            move_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{file_id}"
+            
+            data = {
+                "parentReference": {
+                    "id": folder_id
+                }
+            }
+            
+            response = requests.patch(move_url, headers=self._get_headers(), json=data)
+            response.raise_for_status()
+            
+            return True
+            
+        except Exception as e:
+            raise Exception(f"Failed to move file: {str(e)}")
 
 
 def test_app_auth():
