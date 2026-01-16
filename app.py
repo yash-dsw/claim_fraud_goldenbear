@@ -487,6 +487,9 @@ class FraudDetectionSystem:
             print("⚠ PDF generation failed, continuing without PDF")
         
         # Upload HTML and PDF to OneDrive if enabled
+        report_web_url = None
+        output_folder_url = None
+        
         if self.onedrive_client:
             print("\n📤 Uploading reports to OneDrive...")
             
@@ -505,9 +508,18 @@ class FraudDetectionSystem:
                 if upload_result:
                     print(f"✓ PDF report uploaded to OneDrive: {upload_result['name']}")
                     if upload_result.get('web_url'):
+                        report_web_url = upload_result['web_url']  # Use PDF URL for the report link
                         print(f"  View online: {upload_result['web_url']}")
                 else:
                     print("⚠ Failed to upload PDF report to OneDrive")
+            
+            # Get the output folder URL
+            try:
+                folder_info = self.onedrive_client.get_folder_info(self.onedrive_output_folder)
+                if folder_info and folder_info.get('web_url'):
+                    output_folder_url = folder_info['web_url']
+            except:
+                pass  # Folder URL is optional
         
         # Send email with HTML report if email metadata is available
         if self.email_sender:
@@ -518,7 +530,9 @@ class FraudDetectionSystem:
                     if self.email_sender.send_fraud_report_email(
                         recipient, email_metadata, html_content,
                         input_pdf_path=input_pdf_path,
-                        output_pdf_path=pdf_path
+                        output_pdf_path=pdf_path,
+                        report_web_url=report_web_url,
+                        output_folder_url=output_folder_url
                     ):
                         print(f"✓ Email sent successfully to {recipient}")
                     else:

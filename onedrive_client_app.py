@@ -269,6 +269,34 @@ class OneDriveClientApp:
             print(f"  ✗ Error uploading file: {str(e)}")
             return None
 
+    def get_folder_info(self, folder_name):
+        """Get folder information including web URL.
+        
+        Args:
+            folder_name: Name of the OneDrive folder
+        
+        Returns:
+            Dictionary with folder info including web_url, or None if failed
+        """
+        try:
+            folder_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{folder_name}"
+            response = requests.get(folder_url, headers=self._get_headers())
+            
+            if response.status_code == 200:
+                result = response.json()
+                return {
+                    "id": result.get("id"),
+                    "name": result.get("name"),
+                    "web_url": result.get("webUrl"),
+                    "success": True
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"  ✗ Error getting folder info: {str(e)}")
+            return None
+
     def delete_file(self, file_id):
         """Delete a file from OneDrive.
         
