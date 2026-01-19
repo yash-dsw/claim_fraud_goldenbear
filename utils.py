@@ -7,6 +7,46 @@ from datetime import datetime
 from pypdf import PdfReader
 
 
+def is_pdf_valid(pdf_path):
+    """
+    Check if a PDF file is valid and has extractable content.
+    Used at intake level to filter out empty or corrupted PDFs.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        
+    Returns:
+        Tuple of (is_valid: bool, reason: str)
+        - is_valid: True if PDF is valid and has content, False otherwise
+        - reason: Description of why PDF is invalid (empty string if valid)
+    """
+    try:
+        reader = PdfReader(pdf_path)
+        
+        # Check if PDF has any pages
+        if not reader.pages or len(reader.pages) == 0:
+            return False, "PDF has no pages"
+        
+        # Check if we can extract any text or form fields
+        has_form_fields = reader.get_fields() is not None and len(reader.get_fields()) > 0
+        
+        # Try to extract text from pages
+        has_text = False
+        for page in reader.pages:
+            text = page.extract_text()
+            if text and text.strip():
+                has_text = True
+                break
+        
+        if not has_form_fields and not has_text:
+            return False, "PDF is empty (no form fields and no extractable text)"
+        
+        return True, ""
+        
+    except Exception as e:
+        return False, f"PDF is corrupted or unreadable: {str(e)}"
+
+
 def extract_acord_fields(pdf_path):
     """
     Extract fields from ACORD Commercial Insurance PDF form.

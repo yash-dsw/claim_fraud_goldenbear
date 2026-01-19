@@ -14,7 +14,7 @@ import sys
 import signal
 from dotenv import load_dotenv
 
-from utils import extract_claim_fields
+from utils import extract_claim_fields, is_pdf_valid
 from rules import RuleBasedDetector
 from agent import AgentDetector, MockAgentDetector
 from policy_db import PolicyDatabase
@@ -698,6 +698,31 @@ def run_single_pass(claim_file_arg=None):
             print(f"PROCESSING FILE {i}/{len(claim_files)}: {os.path.basename(claim_file)}")
             print(f"{'='*70}")
         
+        # Validate PDF at intake level - check if it's valid and has content
+        print(f"\n📋 Validating PDF: {os.path.basename(claim_file)}")
+        is_valid, validation_reason = is_pdf_valid(claim_file)
+        
+        if not is_valid:
+            print(f"⚠ Skipping empty/invalid PDF: {os.path.basename(claim_file)}")
+            print(f"   Reason: {validation_reason}")
+            
+            # Clean up local files for invalid PDF
+            json_path = claim_file + ".json"
+            try:
+                if os.path.exists(claim_file):
+                    os.remove(claim_file)
+                    print(f"   ✓ Deleted invalid local PDF: {os.path.basename(claim_file)}")
+                if os.path.exists(json_path):
+                    os.remove(json_path)
+                    print(f"   ✓ Deleted companion JSON: {os.path.basename(json_path)}")
+            except Exception as del_error:
+                print(f"   ⚠ Warning: Failed to delete local files: {del_error}")
+            
+            # Continue to next file - don't stop processing other files
+            continue
+        
+        print(f"   ✓ PDF is valid and has content")
+        
         # Analyze the claim
         results = fraud_system.analyze_claim(claim_file)
         
@@ -927,6 +952,42 @@ def watch_mode():
                         print(f"   Downloading: {pdf_filename}")
                         pdf_path = onedrive.download_file(pdf_file_info, local_dir=processed_folder)
                         print(f"   ✓ PDF saved: {pdf_path}")
+                        
+                        # Validate PDF at intake level - check if it's valid and has content
+                        print(f"\n📋 Validating PDF: {pdf_filename}")
+                        is_valid, validation_reason = is_pdf_valid(pdf_path)
+                        
+                        if not is_valid:
+                            print(f"⚠ Skipping empty/invalid PDF: {pdf_filename}")
+                            print(f"   Reason: {validation_reason}")
+                            
+                            # Clean up local files for invalid PDF
+                            try:
+                                if os.path.exists(pdf_path):
+                                    os.remove(pdf_path)
+                                    print(f"   ✓ Deleted invalid local PDF: {pdf_filename}")
+                                if os.path.exists(json_path):
+                                    os.remove(json_path)
+                                    print(f"   ✓ Deleted companion JSON: {json_filename}")
+                            except Exception as del_error:
+                                print(f"   ⚠ Warning: Failed to delete local files: {del_error}")
+                            
+                            # Still move the empty PDF to processed folder on OneDrive
+                            processed_folder_name = fraud_system.onedrive_processed_folder
+                            print(f"\n📋 Moving invalid files to {processed_folder_name} on OneDrive...")
+                            try:
+                                if onedrive.move_file(pdf_file_info['id'], processed_folder_name):
+                                    print(f"   ✓ Moved invalid PDF to {processed_folder_name}: {pdf_filename}")
+                                if json_file_info:
+                                    if onedrive.move_file(json_file_info['id'], processed_folder_name):
+                                        print(f"   ✓ Moved JSON to {processed_folder_name}: {json_filename}")
+                            except Exception as move_error:
+                                print(f"   ⚠ Warning: Failed to move files on OneDrive: {move_error}")
+                            
+                            # Continue to next pair - don't stop processing other files
+                            continue
+                        
+                        print(f"   ✓ PDF is valid and has content")
                         
                         # Load email metadata before processing
                         print(f"\n📧 Loading email metadata from: {json_path}")
