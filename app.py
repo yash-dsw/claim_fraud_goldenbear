@@ -355,86 +355,239 @@ class FraudDetectionSystem:
             bg_color = '#f5c6cb'  # Darker red
             border_color = '#c82333'  # Dark red
         
-        # Simple HTML template
+        # Format current date
+        current_date = datetime.now().strftime("%B %d, %Y")
+        report_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Simple HTML template with professional formatting
         html = f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Fraud Detection Report</title>
+    <title>Claims Fraud Detection Report</title>
+    <meta charset="UTF-8">
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; line-height: 1.6; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
-        h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }}
-        h2 {{ color: #34495e; margin-top: 30px; border-bottom: 2px solid #ecf0f1; padding-bottom: 5px; }}
-        h3 {{ color: #5a6c7d; margin-top: 20px; }}
-        .summary {{ background-color: #ecf0f1; padding: 20px; border-left: 4px solid #3498db; margin: 20px 0; }}
-        .risk-high {{ color: #e74c3c; font-weight: bold; }}
-        .risk-moderate {{ color: #f39c12; font-weight: bold; }}
-        .risk-low {{ color: #27ae60; font-weight: bold; }}
-        .risk-critical {{ color: #c0392b; font-weight: bold; }}
-        .flag {{ margin: 10px 0; padding: 15px; background-color: #fff3cd; border-left: 4px solid #ffc107; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
-        th {{ background-color: #3498db; color: white; }}
-        .metadata {{ font-size: 0.9em; color: #7f8c8d; margin-bottom: 20px; }}
-        .ai-analysis {{ background-color: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0; }}
-        .ai-analysis ul {{ margin: 10px 0; padding-left: 25px; }}
-        .ai-analysis li {{ margin: 8px 0; }}
-        .ai-analysis p {{ margin: 15px 0; }}
-        strong {{ color: #2c3e50; }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ 
+            font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; 
+            background-color: #ffffff; 
+            color: #333333;
+            line-height: 1.5;
+            font-size: 11pt;
+        }}
+        .container {{ 
+            max-width: 900px; 
+            margin: 0 auto; 
+            padding: 40px 50px;
+        }}
+        .header {{ 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: flex-start;
+            margin-bottom: 30px;
+        }}
+        .title {{ 
+            font-size: 18pt; 
+            font-weight: 700; 
+            color: #000000;
+            line-height: 1.3;
+            letter-spacing: 0.5px;
+        }}
+        .date {{ 
+            font-size: 10pt; 
+            color: #333333;
+            text-align: right;
+        }}
+        .footer {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            font-size: 9pt;
+            color: #666666;
+        }}
+        .footer-left {{
+            text-align: left;
+        }}
+        .footer-right {{
+            text-align: right;
+        }}
+        .section-header {{ 
+            background-color: #F5B041; 
+            color: #000000; 
+            padding: 10px 15px; 
+            font-size: 11pt;
+            font-weight: 700;
+            margin: 25px 0 15px 0;
+            letter-spacing: 0.5px;
+        }}
+        .info-grid {{ 
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px 30px;
+            margin-bottom: 20px;
+        }}
+        .info-item {{ 
+            display: flex;
+            margin-bottom: 8px;
+        }}
+        .info-label {{ 
+            font-weight: 700;
+            color: #000000;
+            min-width: 180px;
+            font-size: 10pt;
+        }}
+        .info-value {{ 
+            color: #333333;
+            font-size: 10pt;
+        }}
+        .verdict-box {{ 
+            background-color: {bg_color}; 
+            border-left: 4px solid {border_color}; 
+            padding: 18px 20px; 
+            margin: 20px 0;
+        }}
+        .verdict-item {{ 
+            margin: 6px 0;
+            font-size: 10pt;
+        }}
+        .verdict-label {{ 
+            font-weight: 700;
+            color: #000000;
+        }}
+        .risk-high {{ color: #c0392b; font-weight: 700; }}
+        .risk-moderate {{ color: #d68910; font-weight: 700; }}
+        .risk-low {{ color: #229954; font-weight: 700; }}
+        .risk-critical {{ color: #922b21; font-weight: 700; }}
+        .flag-item {{ 
+            margin: 10px 0; 
+            padding: 12px 15px; 
+            background-color: #fff8e1; 
+            border-left: 3px solid #f39c12;
+            font-size: 10pt;
+        }}
+        .flag-level {{ 
+            font-weight: 700;
+            color: #c0392b;
+        }}
+        .summary-content {{ 
+            background-color: #f9f9f9; 
+            padding: 18px; 
+            margin: 15px 0;
+            font-size: 10pt;
+            line-height: 1.6;
+        }}
+        .summary-content ul {{ 
+            margin: 10px 0 10px 20px; 
+        }}
+        .summary-content li {{ 
+            margin: 6px 0;
+        }}
+        .summary-content strong {{ 
+            color: #000000;
+            font-weight: 700;
+        }}
+        strong {{ color: #000000; font-weight: 700; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Claims Fraud Detection Report</h1>
-        
-        <div class="metadata">
-            <p><strong>Claim File:</strong> {results['metadata']['claim_file']}</p>
-            <p><strong>Policy Number:</strong> {results['metadata']['policy_number']}</p>
-            <p><strong>Named Insured:</strong> {results['policy_data'].get('named_insured', 'N/A')}</p>
-            <p><strong>Analysis Date:</strong> {results['metadata']['analysis_date']}</p>
+        <div class="header">
+            <div class="title">CLAIMS FRAUD DETECTION REPORT</div>
+            <div class="date">{current_date}</div>
         </div>
         
-        <h2>Fraud Detection Verdict</h2>
-        <div style="background-color: {bg_color}; padding: 20px; border-left: 4px solid {border_color}; margin: 20px 0;">
-            <p style="font-size: 1.3em; margin: 10px 0;"><strong>Fraud Risk:</strong> <span class="risk-{results['fraud_detection']['risk_level'].lower()}">{results['fraud_detection']['risk_level']}</span></p>
-            <p style="margin: 5px 0;"><strong>Fraud Indicators:</strong> {results['fraud_detection']['flags_count']}</p>
-            <p style="margin: 5px 0;"><strong>Risk Score:</strong> {results['fraud_detection']['risk_score']}</p>
+        <div class="section-header">CLIENT & CLAIM DETAILS</div>
+        <div class="info-grid">
+            <div>
+                <div class="info-item">
+                    <span class="info-label">Client Name:</span>
+                    <span class="info-value">{results['policy_data'].get('named_insured', 'N/A')}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Policy Number:</span>
+                    <span class="info-value">{results['metadata']['policy_number']}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Effective Date:</span>
+                    <span class="info-value">{results['policy_data'].get('effective_date', 'N/A')}</span>
+                </div>
+            </div>
+            <div>
+                <div class="info-item">
+                    <span class="info-label">Date of Loss:</span>
+                    <span class="info-value">{results['claim_data'].get('date_of_loss', 'N/A')}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Claim Type:</span>
+                    <span class="info-value">{results['claim_data'].get('claim_type', 'N/A')}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Years in Business:</span>
+                    <span class="info-value">{results['policy_data'].get('years_in_business', 'N/A')}</span>
+                </div>
+            </div>
         </div>
         
-        <h2>Summary</h2>
-        <div class="summary">
-            <div class="ai-analysis">{executive_summary_html}</div>
+        <div class="section-header">FRAUD DETECTION VERDICT</div>
+        <div class="verdict-box">
+            <div class="verdict-item">
+                <span class="verdict-label">Overall Fraud Risk Score:</span> 
+                <span class="risk-{results['fraud_detection']['risk_level'].lower()}">{results['fraud_detection']['risk_score']} ({results['fraud_detection']['risk_level']})</span>
+            </div>
+            <div class="verdict-item">
+                <span class="verdict-label">Review Recommendation:</span> 
+                {'ENHANCED REVIEW REQUIRED' if risk_level in ['HIGH', 'CRITICAL'] else 'STANDARD REVIEW'}
+            </div>
+            <div class="verdict-item">
+                <span class="verdict-label">Fraud Indicators Detected:</span> 
+                {results['fraud_detection']['flags_count']}
+            </div>
         </div>
         
-        <h2>Fraud Indicators (Rule-Based Detection)</h2>
+        <div class="section-header">EXECUTIVE SUMMARY</div>
+        <div class="summary-content">{executive_summary_html}</div>
+        
+        <div class="section-header">FRAUD INDICATORS (RULE-BASED DETECTION)</div>
+        
+        <div class="section-header">FRAUD INDICATORS (RULE-BASED DETECTION)</div>
 """
         
-        for flag in results['fraud_detection']['flags']:
-            html += f"""
-        <div class="flag">
-            <strong>[{flag['risk_level']}]</strong> {flag['description']}<br>
-            {f"<em>{flag['details']}</em>" if flag.get('details') else ''}
+        if results['fraud_detection']['flags']:
+            for flag in results['fraud_detection']['flags']:
+                html += f"""
+        <div class="flag-item">
+            <span class="flag-level">[{flag['risk_level']}]</span> {flag['description']}
+            {f"<br><em style='color: #666;'>{flag['details']}</em>" if flag.get('details') else ''}
+        </div>
+"""
+        else:
+            html += """
+        <div class="flag-item" style="background-color: #e8f5e9; border-left-color: #4caf50;">
+            <span style="color: #2e7d32; font-weight: 700;">No fraud indicators detected</span>
         </div>
 """
         
         html += f"""
         
-        <h2>Policy Information</h2>
-        <table>
-            <tr><th>Field</th><th>Value</th></tr>
-            <tr><td>Named Insured</td><td>{results['policy_data'].get('named_insured', 'N/A')}</td></tr>
-            <tr><td>Policy Number</td><td>{results['policy_data'].get('policy_number', 'N/A')}</td></tr>
-            <tr><td>Effective Date</td><td>{results['policy_data'].get('effective_date', 'N/A')}</td></tr>
-            <tr><td>Years in Business</td><td>{results['policy_data'].get('years_in_business', 'N/A')}</td></tr>
-        </table>
+        <div class="section-header">ADDITIONAL INFORMATION</div>
+        <div style="margin-top: 15px;">
+            <div class="info-item">
+                <span class="info-label">Claim File:</span>
+                <span class="info-value">{results['metadata']['claim_file']}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Analysis Date:</span>
+                <span class="info-value">{results['metadata']['analysis_date']}</span>
+            </div>
+        </div>
         
-        <h2>Claim Information</h2>
-        <table>
-            <tr><th>Field</th><th>Value</th></tr>
-            <tr><td>Date of Loss</td><td>{results['claim_data'].get('date_of_loss', 'N/A')}</td></tr>
-            <tr><td>Claim Type</td><td>{results['claim_data'].get('claim_type', 'N/A')}</td></tr>
-        </table>
+        <div class="footer">
+            <div class="footer-left">Report Generated: {report_timestamp}</div>
+            <div class="footer-right">Confidential - For Underwriting Use Only</div>
+        </div>
         
     </div>
 </body>
