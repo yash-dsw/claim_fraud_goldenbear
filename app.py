@@ -1345,7 +1345,7 @@ def watch_mode():
                 
             except Exception as e:
                 print(f"\n✗ Error checking OneDrive: {str(e)}")
-                print("   Will retry in 10 seconds...")
+                print("   Will retry in 5 seconds...")
             
             # Wait before next check (adjust polling interval as needed)
             time.sleep(5)  # Check every 10 seconds
