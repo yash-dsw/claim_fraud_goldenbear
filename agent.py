@@ -21,6 +21,48 @@ class AgentDetector:
         )
         self.model = "meta-llama/llama-3.3-70b-instruct"
     
+    def extract_policy_number(self, subject, body):
+        """
+        Extract policy or claim number from email subject and body using LLM.
+        
+        Args:
+            subject: Email subject line
+            body: Email body text (or body preview)
+        
+        Returns:
+            Extracted policy/claim number string, or "UNKNOWN" if not found
+        """
+        from prompts import EXTRACT_POLICY_NUMBER_PROMPT
+        
+        prompt = EXTRACT_POLICY_NUMBER_PROMPT.format(
+            subject=subject or "",
+            body=body or ""
+        )
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=50,
+                temperature=0.1,  # Low temperature for precise extraction
+                messages=[
+                    {"role": "system", "content": "You are a precise data extraction assistant."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            extracted = response.choices[0].message.content.strip()
+            
+            # Clean up the response - remove any extra text
+            # Take only the first word/token if there's additional text
+            extracted = extracted.split()[0] if extracted else "UNKNOWN"
+            
+            print(f"  ✓ LLM extracted policy number: {extracted}")
+            return extracted
+        
+        except Exception as e:
+            print(f"  ⚠ Error extracting policy number via LLM: {str(e)}")
+            return "UNKNOWN"
+    
     def summarize_findings(self, policy_data, claim_data, rule_flags, risk_level, risk_score):
         """
         Generate a human-readable summary of rule-based fraud detection results.
@@ -88,6 +130,39 @@ class AgentDetector:
 
 class MockAgentDetector:
     """Mock agent for when no API key is available."""
+    
+    def extract_policy_number(self, subject, body):
+        """
+        Attempt to extract policy number using simple pattern matching (no AI).
+        
+        Args:
+            subject: Email subject line
+            body: Email body text
+        
+        Returns:
+            Extracted policy/claim number or "UNKNOWN"
+        """
+        import re
+        
+        combined_text = f"{subject or ''} {body or ''}"
+        
+        # Common patterns for policy/claim numbers
+        patterns = [
+            r'(?:policy|claim|case|ref|reference)[\s#:\-]*([A-Za-z0-9\-]+)',
+            r'([CP]\d+)',  # C1, C2, P123 style
+            r'#\s*([A-Za-z0-9\-]+)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, combined_text, re.IGNORECASE)
+            if match:
+                result = match.group(1).strip()
+                if result:
+                    print(f"  ✓ Pattern extracted policy number: {result}")
+                    return result
+        
+        print("  ⚠ Could not extract policy number (no pattern match)")
+        return "UNKNOWN"
     
     def summarize_findings(self, policy_data, claim_data, rule_flags, risk_level, risk_score):
         """Generate a basic summary without AI."""

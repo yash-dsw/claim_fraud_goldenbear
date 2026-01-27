@@ -53,6 +53,7 @@ class FraudDetectionSystem:
         self.onedrive_client = None
         self.onedrive_output_folder = None
         self.onedrive_processed_folder = None
+        self.onedrive_claims_fraud_folder = None
         self.email_sender = None
         if os.getenv("ONEDRIVE_ENABLED", "0") == "1":
             tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
@@ -62,12 +63,14 @@ class FraudDetectionSystem:
             input_folder = os.getenv("ONEDRIVE_FOLDER_NAME", "Input_attachments")
             self.onedrive_output_folder = os.getenv("ONEDRIVE_OUTPUT_FOLDER", "Output_attachments")
             self.onedrive_processed_folder = os.getenv("ONEDRIVE_PROCESSED_INPUTS", "Processed_inputs")
+            self.onedrive_claims_fraud_folder = os.getenv("ONEDRIVE_CLAIMS_FRAUD_FOLDER", "Claims_fraud")
             
             if all([tenant_id, client_id, client_secret, user_email]):
                 self.onedrive_client = OneDriveClientApp(
                     tenant_id, client_id, client_secret, user_email, input_folder
                 )
                 print(f"✓ OneDrive upload enabled (folder: {self.onedrive_output_folder})")
+                print(f"✓ Claims fraud folder: {self.onedrive_claims_fraud_folder}")
                 
                 # Initialize email sender (shares credentials with OneDrive)
                 self.email_sender = EmailSender(
@@ -595,7 +598,7 @@ class FraudDetectionSystem:
 """
         return html
     
-    def save_results(self, results, output_dir="output", email_metadata=None, input_pdf_path=None):
+    def save_results(self, results, output_dir="output", email_metadata=None, input_pdf_path=None, claims_folder_path=None):
         """Save results to files and optionally send email.
         
         Args:
@@ -606,6 +609,8 @@ class FraudDetectionSystem:
                           - Example: {"toRecipients": "user@example.com", "subject": "...", ...}
                           - If missing or invalid, email will not be sent (with warning)
             input_pdf_path: Optional path to the original claim PDF (for email attachment)
+            claims_folder_path: Optional OneDrive folder path for claims (e.g., "Claims_fraud/P123_2026-01-27")
+                              - If provided, outputs will be uploaded to this folder instead of default output folder
         """
         os.makedirs(output_dir, exist_ok=True)
         
@@ -646,8 +651,16 @@ class FraudDetectionSystem:
         if self.onedrive_client:
             print("\n📤 Uploading reports to OneDrive...")
             
+            # Determine upload folder (claims_folder_path or default output folder)
+            upload_folder = claims_folder_path if claims_folder_path else self.onedrive_output_folder
+            use_path_upload = claims_folder_path is not None
+            
             # Upload HTML
-            upload_result = self.onedrive_client.upload_file(html_path, self.onedrive_output_folder)
+            if use_path_upload:
+                upload_result = self.onedrive_client.upload_file_to_path(html_path, upload_folder)
+            else:
+                upload_result = self.onedrive_client.upload_file(html_path, upload_folder)
+            
             if upload_result:
                 print(f"✓ HTML report uploaded to OneDrive: {upload_result['name']}")
                 if upload_result.get('web_url'):
@@ -657,7 +670,11 @@ class FraudDetectionSystem:
             
             # Upload PDF if generated
             if pdf_path:
-                upload_result = self.onedrive_client.upload_file(pdf_path, self.onedrive_output_folder)
+                if use_path_upload:
+                    upload_result = self.onedrive_client.upload_file_to_path(pdf_path, upload_folder)
+                else:
+                    upload_result = self.onedrive_client.upload_file(pdf_path, upload_folder)
+                
                 if upload_result:
                     print(f"✓ PDF report uploaded to OneDrive: {upload_result['name']}")
                     if upload_result.get('web_url'):
@@ -668,7 +685,10 @@ class FraudDetectionSystem:
             
             # Get the output folder URL
             try:
-                folder_info = self.onedrive_client.get_folder_info(self.onedrive_output_folder)
+                if use_path_upload:
+                    folder_info = self.onedrive_client.get_subfolder_info(upload_folder)
+                else:
+                    folder_info = self.onedrive_client.get_folder_info(upload_folder)
                 if folder_info and folder_info.get('web_url'):
                     output_folder_url = folder_info['web_url']
             except:
@@ -1114,26 +1134,34 @@ def watch_mode():
                             print(f"⚠ Skipping empty/invalid PDF: {pdf_filename}")
                             print(f"   Reason: {validation_reason}")
                             
-                            # Clean up local files for invalid PDF
+                            # Move local JSON to processed_input folder, delete local PDF
+                            local_processed_dir = "processed_input"
+                            os.makedirs(local_processed_dir, exist_ok=True)
+                            
                             try:
                                 if os.path.exists(pdf_path):
                                     os.remove(pdf_path)
                                     print(f"   ✓ Deleted invalid local PDF: {pdf_filename}")
                                 if os.path.exists(json_path):
-                                    os.remove(json_path)
-                                    print(f"   ✓ Deleted companion JSON: {json_filename}")
+                                    import shutil
+                                    processed_json_path = os.path.join(local_processed_dir, json_filename)
+                                    shutil.move(json_path, processed_json_path)
+                                    print(f"   ✓ Moved local JSON to {local_processed_dir}: {json_filename}")
                             except Exception as del_error:
-                                print(f"   ⚠ Warning: Failed to delete local files: {del_error}")
+                                print(f"   ⚠ Warning: Failed to process local files: {del_error}")
                             
-                            # Still move the empty PDF to processed folder on OneDrive
+                            # Move the empty PDF to processed folder on OneDrive, delete JSON from OneDrive
                             processed_folder_name = fraud_system.onedrive_processed_folder
-                            print(f"\n📋 Moving invalid files to {processed_folder_name} on OneDrive...")
+                            print(f"\n📋 Moving invalid PDF to {processed_folder_name} on OneDrive...")
                             try:
                                 if onedrive.move_file(pdf_file_info['id'], processed_folder_name):
                                     print(f"   ✓ Moved invalid PDF to {processed_folder_name}: {pdf_filename}")
                                 if json_file_info:
-                                    if onedrive.move_file(json_file_info['id'], processed_folder_name):
-                                        print(f"   ✓ Moved JSON to {processed_folder_name}: {json_filename}")
+                                    try:
+                                        onedrive.delete_file(json_file_info['id'])
+                                        print(f"   ✓ Deleted JSON from OneDrive: {json_filename}")
+                                    except:
+                                        pass
                             except Exception as move_error:
                                 print(f"   ⚠ Warning: Failed to move files on OneDrive: {move_error}")
                             
@@ -1146,6 +1174,56 @@ def watch_mode():
                         print(f"\n📧 Loading email metadata from: {json_path}")
                         email_metadata = load_email_metadata(json_path)
                         
+                        # Debug: Print what we got from the JSON
+                        if email_metadata:
+                            print(f"[DEBUG] Email metadata loaded successfully")
+                            print(f"[DEBUG]   Available keys: {list(email_metadata.keys())}")
+                        else:
+                            print(f"[DEBUG] WARNING: email_metadata is empty or None!")
+                        
+                        # Extract policy number from email metadata using LLM
+                        claims_folder_path = None
+                        email_id = email_metadata.get("id", "")
+                        received_datetime = email_metadata.get("receivedDateTime", "")
+                        
+                        print(f"[DEBUG] email_id = '{email_id}'")
+                        print(f"[DEBUG] received_datetime = '{received_datetime}'")
+                        
+                        print(f"\n🔍 Extracting policy number from email...")
+                        subject = email_metadata.get("subject", "")
+                        body = email_metadata.get("bodyPreview", "") or email_metadata.get("body", "")
+                        
+                        print(f"[DEBUG] subject = '{subject}'")
+                        print(f"[DEBUG] body preview = '{body[:100] if body else 'EMPTY'}...'")
+                        
+                        # Use the agent to extract policy number
+                        policy_number = fraud_system.agent.extract_policy_number(subject, body)
+                        
+                        # Create folder name: <policy_number>_<current_system_time>
+                        folder_time = datetime.now().strftime("%Y_%m_%dT%H_%M_%S")
+                        
+                        claim_subfolder_name = f"{policy_number}_{folder_time}"
+                        claims_fraud_folder = fraud_system.onedrive_claims_fraud_folder
+                        
+                        # Create the subfolder in Claims_fraud
+                        print(f"\n📁 Creating claims folder: {claims_fraud_folder}/{claim_subfolder_name}")
+                        folder_id, claims_folder_path = onedrive.create_subfolder(claims_fraud_folder, claim_subfolder_name)
+                        
+                        if claims_folder_path:
+                            print(f"   ✓ Claims folder ready: {claims_folder_path}")
+                            
+                            # Create email URL shortcut in the folder
+                            if email_id:
+                                email_url = f"https://outlook.office.com/mail/inbox/id/{email_id}"
+                                print(f"\n🔗 Creating email link shortcut...")
+                                shortcut_result = onedrive.create_url_shortcut(claims_folder_path, "Original_Email", email_url)
+                                if shortcut_result:
+                                    print(f"   ✓ Email shortcut created: {email_url}")
+                                else:
+                                    print(f"   ⚠ Failed to create email shortcut")
+                        else:
+                            print(f"   ⚠ Failed to create claims folder, using default output folder")
+                        
                         # Process the PDF
                         print(f"\n🔍 Processing claim: {pdf_filename}")
                         results = fraud_system.analyze_claim(pdf_path)
@@ -1153,38 +1231,79 @@ def watch_mode():
                         if "error" in results:
                             print(f"\n✗ Analysis failed: {results['error']}")
                         else:
-                            # Generate report and send email
+                            # Generate report and send email, using claims_folder_path for output
                             fraud_system.generate_report(results, output_format="console")
-                            fraud_system.save_results(results, email_metadata=email_metadata, input_pdf_path=pdf_path)
+                            fraud_system.save_results(
+                                results, 
+                                email_metadata=email_metadata, 
+                                input_pdf_path=pdf_path,
+                                claims_folder_path=claims_folder_path
+                            )
                             print(f"\n✓ Analysis complete for {pdf_filename}!")
                         
-                        # Delete processed local files from input folder
-                        try:
-                            # Delete PDF
-                            os.remove(pdf_path)
-                            print(f"   ✓ Deleted local PDF: {pdf_filename}")
-                            
-                            # Delete JSON
-                            if os.path.exists(json_path):
-                                os.remove(json_path)
-                                print(f"   ✓ Deleted local JSON: {json_filename}")
-                        except Exception as del_error:
-                            print(f"   ⚠ Warning: Failed to delete local files: {del_error}")
+                        # Move local JSON to processed_input folder (keep locally for reference)
+                        local_processed_dir = "processed_input"
+                        os.makedirs(local_processed_dir, exist_ok=True)
                         
-                        # Move both PDF and JSON to processed folder on OneDrive
-                        processed_folder_name = fraud_system.onedrive_processed_folder
-                        print(f"\n📋 Moving files to {processed_folder_name} on OneDrive...")
                         try:
-                            # Move PDF file
-                            if onedrive.move_file(pdf_file_info['id'], processed_folder_name):
-                                print(f"   ✓ Moved PDF to {processed_folder_name}: {pdf_filename}")
+                            # Delete local PDF (will be moved on OneDrive)
+                            if os.path.exists(pdf_path):
+                                os.remove(pdf_path)
+                                print(f"   ✓ Deleted local PDF: {pdf_filename}")
                             
-                            # Move companion JSON file if it exists
-                            if json_file_info:
-                                if onedrive.move_file(json_file_info['id'], processed_folder_name):
-                                    print(f"   ✓ Moved JSON to {processed_folder_name}: {json_filename}")
-                        except Exception as move_error:
-                            print(f"   ⚠ Warning: Failed to move files on OneDrive: {move_error}")
+                            # Move JSON locally to processed_input folder
+                            if os.path.exists(json_path):
+                                import shutil
+                                processed_json_path = os.path.join(local_processed_dir, json_filename)
+                                shutil.move(json_path, processed_json_path)
+                                print(f"   ✓ Moved local JSON to {local_processed_dir}: {json_filename}")
+                        except Exception as del_error:
+                            print(f"   ⚠ Warning: Failed to process local files: {del_error}")
+                        
+                        # Move PDF to Claims_fraud subfolder on OneDrive (JSON stays local)
+                        # Delete JSON from OneDrive Input_attachments
+                        if claims_folder_path:
+                            destination_folder = claims_folder_path
+                            print(f"\n📋 Moving PDF to {destination_folder} on OneDrive...")
+                            try:
+                                # Move PDF file to claims subfolder
+                                if onedrive.move_file_to_path(pdf_file_info['id'], destination_folder):
+                                    print(f"   ✓ Moved PDF to {destination_folder}: {pdf_filename}")
+                                
+                                # Delete JSON from OneDrive Input_attachments (already saved locally)
+                                if json_file_info:
+                                    try:
+                                        onedrive.delete_file(json_file_info['id'])
+                                        print(f"   ✓ Deleted JSON from OneDrive Input_attachments: {json_filename}")
+                                    except Exception as del_err:
+                                        print(f"   ⚠ Warning: Failed to delete JSON from OneDrive: {del_err}")
+                            except Exception as move_error:
+                                print(f"   ⚠ Warning: Failed to move PDF to claims folder: {move_error}")
+                                # Fallback to processed folder
+                                print(f"   Falling back to {fraud_system.onedrive_processed_folder}...")
+                                try:
+                                    if onedrive.move_file(pdf_file_info['id'], fraud_system.onedrive_processed_folder):
+                                        print(f"   ✓ Moved PDF to {fraud_system.onedrive_processed_folder}: {pdf_filename}")
+                                except:
+                                    pass
+                        else:
+                            # Fallback to processed folder if claims folder creation failed
+                            processed_folder_name = fraud_system.onedrive_processed_folder
+                            print(f"\n📋 Moving PDF to {processed_folder_name} on OneDrive...")
+                            try:
+                                # Move PDF file
+                                if onedrive.move_file(pdf_file_info['id'], processed_folder_name):
+                                    print(f"   ✓ Moved PDF to {processed_folder_name}: {pdf_filename}")
+                                
+                                # Delete JSON from OneDrive (already saved locally)
+                                if json_file_info:
+                                    try:
+                                        onedrive.delete_file(json_file_info['id'])
+                                        print(f"   ✓ Deleted JSON from OneDrive: {json_filename}")
+                                    except:
+                                        pass
+                            except Exception as move_error:
+                                print(f"   ⚠ Warning: Failed to move files on OneDrive: {move_error}")
                         
                     except Exception as e:
                         print(f"✗ Error processing pair {pdf_filename}: {str(e)}")

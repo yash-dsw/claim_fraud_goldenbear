@@ -8,6 +8,8 @@ venv/
 env/
 ENV/
 
+processed_input/
+
 # Local env files
 .env
 *env

@@ -370,6 +370,218 @@ class OneDriveClientApp:
         except Exception as e:
             raise Exception(f"Failed to move file: {str(e)}")
 
+    def create_subfolder(self, parent_folder_name, subfolder_name):
+        """Create a subfolder inside a parent folder.
+        
+        Args:
+            parent_folder_name: Name of the parent folder (e.g., "Claims_fraud")
+            subfolder_name: Name of the subfolder to create
+            
+        Returns:
+            Tuple of (folder_id, folder_path) or (None, None) if failed
+        """
+        try:
+            # First ensure parent folder exists
+            parent_id = self._create_folder_if_not_exists(parent_folder_name)
+            
+            if not parent_id:
+                raise Exception(f"Could not access or create parent folder '{parent_folder_name}'")
+            
+            # Check if subfolder already exists
+            subfolder_path = f"{parent_folder_name}/{subfolder_name}"
+            subfolder_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{subfolder_path}"
+            
+            response = requests.get(subfolder_url, headers=self._get_headers())
+            
+            if response.status_code == 200:
+                # Subfolder exists
+                result = response.json()
+                print(f"  ✓ Subfolder already exists: {subfolder_path}")
+                return result.get("id"), subfolder_path
+            
+            # Create subfolder inside parent
+            create_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{parent_id}/children"
+            
+            data = {
+                "name": subfolder_name,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "rename"
+            }
+            
+            response = requests.post(create_url, headers=self._get_headers(), json=data)
+            response.raise_for_status()
+            
+            result = response.json()
+            print(f"  ✓ Created subfolder: {subfolder_path}")
+            return result.get("id"), subfolder_path
+            
+        except Exception as e:
+            print(f"  ✗ Error creating subfolder: {str(e)}")
+            return None, None
+
+    def upload_file_to_path(self, local_file_path, onedrive_folder_path):
+        """Upload a file to a specific OneDrive folder path (including subfolders).
+        
+        Args:
+            local_file_path: Path to the local file to upload
+            onedrive_folder_path: Full OneDrive path (e.g., "Claims_fraud/P123_2026-01-27")
+        
+        Returns:
+            Dictionary with upload info or None if failed
+        """
+        try:
+            file_name = os.path.basename(local_file_path)
+            
+            # Upload the file using direct path
+            upload_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{onedrive_folder_path}/{file_name}:/content"
+            
+            with open(local_file_path, 'rb') as f:
+                file_content = f.read()
+            
+            headers = self._get_headers()
+            headers["Content-Type"] = "application/octet-stream"
+            
+            response = requests.put(upload_url, headers=headers, data=file_content)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            return {
+                "id": result.get("id"),
+                "name": result.get("name"),
+                "size": result.get("size"),
+                "web_url": result.get("webUrl"),
+                "success": True
+            }
+            
+        except Exception as e:
+            print(f"  ✗ Error uploading file to path: {str(e)}")
+            return None
+
+    def move_file_to_path(self, file_id, destination_folder_path):
+        """Move a file to a specific OneDrive folder path (including subfolders).
+        
+        Args:
+            file_id: The ID of the file to move
+            destination_folder_path: Full OneDrive path (e.g., "Claims_fraud/P123_2026-01-27")
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get the folder ID for the destination path
+            folder_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{destination_folder_path}"
+            response = requests.get(folder_url, headers=self._get_headers())
+            
+            if response.status_code != 200:
+                raise Exception(f"Destination folder not found: {destination_folder_path}")
+            
+            folder_id = response.json().get("id")
+            
+            # Get file info to check name
+            file_info_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{file_id}"
+            response = requests.get(file_info_url, headers=self._get_headers())
+            response.raise_for_status()
+            file_info = response.json()
+            file_name = file_info.get('name')
+            
+            # Check if file with same name exists in destination folder
+            check_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{folder_id}/children"
+            response = requests.get(check_url, headers=self._get_headers())
+            response.raise_for_status()
+            existing_files = response.json().get('value', [])
+            
+            # Delete existing file with same name if found
+            for existing_file in existing_files:
+                if existing_file.get('name') == file_name:
+                    delete_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{existing_file['id']}"
+                    requests.delete(delete_url, headers=self._get_headers())
+                    break
+            
+            # Move the file using PATCH request
+            move_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/items/{file_id}"
+            
+            data = {
+                "parentReference": {
+                    "id": folder_id
+                }
+            }
+            
+            response = requests.patch(move_url, headers=self._get_headers(), json=data)
+            response.raise_for_status()
+            
+            return True
+            
+        except Exception as e:
+            raise Exception(f"Failed to move file to path: {str(e)}")
+
+    def create_url_shortcut(self, folder_path, shortcut_name, url):
+        """Create a .url shortcut file in a OneDrive folder.
+        
+        Args:
+            folder_path: Full OneDrive path for the folder (e.g., "Claims_fraud/P123_2026-01-27")
+            shortcut_name: Name for the shortcut file (without .url extension)
+            url: The URL to link to
+            
+        Returns:
+            Dictionary with upload info or None if failed
+        """
+        try:
+            # Create .url file content (Windows shortcut format)
+            url_content = f"[InternetShortcut]\nURL={url}\n"
+            
+            # Upload as .url file
+            file_name = f"{shortcut_name}.url"
+            upload_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{folder_path}/{file_name}:/content"
+            
+            headers = self._get_headers()
+            headers["Content-Type"] = "text/plain"
+            
+            response = requests.put(upload_url, headers=headers, data=url_content.encode('utf-8'))
+            response.raise_for_status()
+            
+            result = response.json()
+            print(f"  ✓ Created URL shortcut: {file_name}")
+            
+            return {
+                "id": result.get("id"),
+                "name": result.get("name"),
+                "web_url": result.get("webUrl"),
+                "success": True
+            }
+            
+        except Exception as e:
+            print(f"  ✗ Error creating URL shortcut: {str(e)}")
+            return None
+
+    def get_subfolder_info(self, folder_path):
+        """Get folder information for a full folder path including web URL.
+        
+        Args:
+            folder_path: Full OneDrive path (e.g., "Claims_fraud/P123_2026-01-27")
+        
+        Returns:
+            Dictionary with folder info including web_url, or None if failed
+        """
+        try:
+            folder_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{folder_path}"
+            response = requests.get(folder_url, headers=self._get_headers())
+            
+            if response.status_code == 200:
+                result = response.json()
+                return {
+                    "id": result.get("id"),
+                    "name": result.get("name"),
+                    "web_url": result.get("webUrl"),
+                    "success": True
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"  ✗ Error getting folder info: {str(e)}")
+            return None
+
 
 def test_app_auth():
     """Test OneDrive connection with app credentials."""

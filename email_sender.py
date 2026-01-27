@@ -225,7 +225,13 @@ class EmailSender:
         # Extract metadata
         from_email = email_metadata.get("from", "Unknown Sender")  # Original sender
         received_dt = parse_email_date(email_metadata.get("receivedDateTime", ""))
+        
+        # Get body preview - check for bodyPreview first, then fall back to body
         body_preview = email_metadata.get("bodyPreview", "")
+        if not body_preview:
+            # If bodyPreview not found, use body and truncate it
+            body_preview = email_metadata.get("body", "")
+        
         original_subject = email_metadata.get("subject", "Claim Analysis")
         
         # Truncate body preview to 250 characters if longer
@@ -411,6 +417,7 @@ def parse_email_date(date_str):
 def load_email_metadata(json_path):
     """
     Load email metadata from a companion JSON file.
+    Handles malformed JSON with embedded newlines and unescaped quotes in string values.
     
     Args:
         json_path: Path to the .pdf.json file
@@ -418,38 +425,105 @@ def load_email_metadata(json_path):
     Returns:
         Dictionary with email metadata or empty dict if not found
     """
+    import re
+    
+    if not os.path.exists(json_path):
+        print(f"[DEBUG] No companion JSON found at: {json_path}")
+        return {}
+    
     try:
-        if os.path.exists(json_path):
-            with open(json_path, 'rb') as f:
-                raw_bytes = f.read()
-            
-            # Decode to string
-            content = raw_bytes.decode('utf-8', errors='replace')
-            
-            # Sanitize content - replace control characters that break JSON parsing
-            # The issue is that raw newlines appear INSIDE JSON string values
-            # We need to escape them before parsing
-            import re
-            
-            # Replace all newline variants with escaped version
-            # This works because JSON string values shouldn't have literal newlines
-            content = content.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
-            
-            # Also handle any other control characters (ASCII 0-31 except tab and space)
-            content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
-            
+        with open(json_path, 'rb') as f:
+            raw_bytes = f.read()
+        
+        # Decode to string
+        content = raw_bytes.decode('utf-8', errors='replace')
+        
+        # Try standard JSON parse first
+        try:
             metadata = json.loads(content)
+            print(f"[DEBUG] Loaded email metadata (standard JSON) from: {json_path}")
+        except json.JSONDecodeError:
+            # Fallback: Extract fields directly using regex
+            # This handles malformed JSON with unescaped quotes and newlines
+            print(f"[DEBUG] Standard JSON parse failed, extracting fields directly...")
+            metadata = _extract_email_fields(content)
+        
+        if metadata:
             print(f"[DEBUG] Loaded email metadata from: {json_path}")
+            print(f"[DEBUG]   Keys in JSON: {list(metadata.keys())}")
+            print(f"[DEBUG]   id: {metadata.get('id', 'MISSING')}")
             print(f"[DEBUG]   from: {metadata.get('from', 'N/A')}")
             print(f"[DEBUG]   toRecipients: {metadata.get('toRecipients', 'MISSING')}")
             print(f"[DEBUG]   subject: {metadata.get('subject', 'N/A')}")
-            return metadata
-        else:
-            print(f"[DEBUG] No companion JSON found at: {json_path}")
-            return {}
+            print(f"[DEBUG]   receivedDateTime: {metadata.get('receivedDateTime', 'MISSING')}")
+            body_preview = metadata.get('bodyPreview', '') or metadata.get('body', '')
+            print(f"[DEBUG]   body/bodyPreview length: {len(body_preview)}")
+        
+        return metadata
+        
     except Exception as e:
         print(f"[ERROR] Error loading email metadata from {json_path}: {str(e)}")
         return {}
+
+
+def _extract_email_fields(content):
+    """
+    Extract email metadata fields directly from malformed JSON content.
+    Handles unescaped quotes and newlines inside string values.
+    
+    Args:
+        content: Raw JSON-like string content
+        
+    Returns:
+        Dictionary with extracted fields
+    """
+    import re
+    
+    metadata = {}
+    
+    # Simple fields (values don't contain quotes or newlines)
+    simple_fields = ['id', 'internetMessageId', 'from', 'toRecipients', 'subject', 'receivedDateTime']
+    
+    for field in simple_fields:
+        # Match "field": "value" or "field":"value" 
+        # Value ends at the next unescaped quote followed by comma, newline, or }
+        pattern = rf'"{field}"\s*:\s*"([^"]*)"'
+        match = re.search(pattern, content)
+        if match:
+            metadata[field] = match.group(1).strip()
+    
+    # Complex fields that may contain quotes and newlines (body, bodyPreview)
+    # These are typically the last field or contain multi-line content
+    
+    # Try to extract bodyPreview first
+    body_preview_match = re.search(r'"bodyPreview"\s*:\s*"(.*?)"(?=\s*[,}]|\s*"[a-zA-Z])', content, re.DOTALL)
+    if body_preview_match:
+        metadata['bodyPreview'] = body_preview_match.group(1).strip()
+    
+    # Extract body field - this is trickier because it may have unescaped quotes
+    # Strategy: find "body": " and then find the last " before } at the end
+    body_start = re.search(r'"body"\s*:\s*"', content)
+    if body_start:
+        start_pos = body_start.end()
+        # Find the closing } of the JSON object
+        # The body value ends at the last " before the final }
+        remaining = content[start_pos:]
+        
+        # Work backwards from the end to find where body value ends
+        # Look for pattern: "  followed by optional whitespace and }
+        end_match = re.search(r'"\s*\n?\s*}$', remaining.rstrip())
+        if end_match:
+            body_content = remaining[:end_match.start()]
+            # Clean up the body content
+            body_content = body_content.strip()
+            metadata['body'] = body_content
+            
+            # Also use as bodyPreview if not already set
+            if 'bodyPreview' not in metadata:
+                # Truncate for preview
+                metadata['bodyPreview'] = body_content[:500] if len(body_content) > 500 else body_content
+    
+    return metadata
 
 
 def get_recipient_email(email_metadata):

@@ -2,6 +2,26 @@
 Prompts for the AI agent-based fraud detection.
 """
 
+EXTRACT_POLICY_NUMBER_PROMPT = """Extract the policy number or claim number from the following email information.
+
+EMAIL SUBJECT:
+{subject}
+
+EMAIL BODY:
+{body}
+
+Look for patterns like:
+- Policy numbers (e.g., "Policy: P12345", "Policy #12345", "Policy Number: ABC123")
+- Claim numbers (e.g., "Claim: C12345", "Claim #12345", "Claim Number: XYZ789")
+- Reference numbers or case numbers
+
+Return ONLY the policy or claim number found, without any prefix like "Policy:" or "Claim:".
+If multiple numbers are found, return the most relevant one (policy number preferred over claim number).
+If no policy or claim number is found, return "UNKNOWN".
+
+Your response should be ONLY the extracted number (e.g., "P12345" or "C1" or "UNKNOWN"), nothing else."""
+
+
 SUMMARY_ONLY_PROMPT = """You are summarizing fraud detection results for an insurance claim.
 
 POLICY INFORMATION:
