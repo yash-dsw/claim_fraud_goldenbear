@@ -19,7 +19,7 @@ from rules import RuleBasedDetector
 from agent import AgentDetector, MockAgentDetector
 from policy_db import PolicyDatabase
 from onedrive_client_app import OneDriveClientApp
-from email_sender import EmailSender, load_email_metadata, get_recipient_email
+from email_sender import EmailSender, load_email_metadata, get_recipient_email, download_eml_from_json
 
 
 class FraudDetectionSystem:
@@ -644,44 +644,78 @@ class FraudDetectionSystem:
             pdf_path = None
             print("⚠ PDF generation failed, continuing without PDF")
         
-        # Upload HTML and PDF to OneDrive if enabled
+        # PRIORITY: Upload PDF to Output_attachments folder IMMEDIATELY (before anything else)
         report_web_url = None
+        if self.onedrive_client and pdf_path:
+            print(f"\n📤 PRIORITY: Uploading PDF to {self.onedrive_output_folder}...")
+            upload_result = self.onedrive_client.upload_file(pdf_path, self.onedrive_output_folder)
+            
+            if upload_result:
+                print(f"✓ PDF uploaded to {self.onedrive_output_folder}: {upload_result['name']}")
+                if upload_result.get('web_url'):
+                    report_web_url = upload_result['web_url']
+                    print(f"  View online: {upload_result['web_url']}")
+            else:
+                print(f"⚠ Failed to upload PDF to {self.onedrive_output_folder}")
+        
+        # Download EML file if email metadata is available
+        eml_path = None
+        if email_metadata and self.email_sender:
+            from email_sender import get_message_id_from_metadata
+            message_id = get_message_id_from_metadata(email_metadata)
+            
+            if message_id:
+                eml_filename = f"{base_name}.eml" if input_pdf_path else f"{output_base_name}.eml"
+                eml_path = os.path.join(output_dir, eml_filename)
+                
+                print(f"\n📧 Downloading original email as EML...")
+                downloaded_eml = self.email_sender.download_email_as_eml(
+                    message_id=message_id,
+                    output_path=eml_path
+                )
+                
+                if downloaded_eml:
+                    print(f"✓ EML file saved: {eml_path}")
+                else:
+                    eml_path = None
+                    print("⚠ Failed to download EML file")
+            else:
+                print("⚠ No message ID found in email metadata, skipping EML download")
+        
+        # Upload to claims folder and additional operations
         output_folder_url = None
         
         if self.onedrive_client:
-            print("\n📤 Uploading reports to OneDrive...")
+            print("\n📤 Uploading additional files to OneDrive...")
             
             # Determine upload folder (claims_folder_path or default output folder)
             upload_folder = claims_folder_path if claims_folder_path else self.onedrive_output_folder
             use_path_upload = claims_folder_path is not None
             
-            # Upload HTML
-            if use_path_upload:
-                upload_result = self.onedrive_client.upload_file_to_path(html_path, upload_folder)
-            else:
-                upload_result = self.onedrive_client.upload_file(html_path, upload_folder)
-            
-            if upload_result:
-                print(f"✓ HTML report uploaded to OneDrive: {upload_result['name']}")
-                if upload_result.get('web_url'):
-                    print(f"  View online: {upload_result['web_url']}")
-            else:
-                print("⚠ Failed to upload HTML report to OneDrive")
-            
-            # Upload PDF if generated
-            if pdf_path:
-                if use_path_upload:
-                    upload_result = self.onedrive_client.upload_file_to_path(pdf_path, upload_folder)
-                else:
-                    upload_result = self.onedrive_client.upload_file(pdf_path, upload_folder)
+            # Upload PDF to claims_fraud folder (if different from output folder)
+            if pdf_path and use_path_upload:
+                upload_result = self.onedrive_client.upload_file_to_path(pdf_path, upload_folder)
                 
                 if upload_result:
-                    print(f"✓ PDF report uploaded to OneDrive: {upload_result['name']}")
+                    print(f"✓ PDF report uploaded to {upload_folder}: {upload_result['name']}")
                     if upload_result.get('web_url'):
-                        report_web_url = upload_result['web_url']  # Use PDF URL for the report link
                         print(f"  View online: {upload_result['web_url']}")
                 else:
-                    print("⚠ Failed to upload PDF report to OneDrive")
+                    print(f"⚠ Failed to upload PDF report to {upload_folder}")
+            
+            # Upload EML file if downloaded
+            if eml_path:
+                if use_path_upload:
+                    upload_result = self.onedrive_client.upload_file_to_path(eml_path, upload_folder)
+                else:
+                    upload_result = self.onedrive_client.upload_file(eml_path, upload_folder)
+                
+                if upload_result:
+                    print(f"✓ EML file uploaded to OneDrive: {upload_result['name']}")
+                    if upload_result.get('web_url'):
+                        print(f"  View online: {upload_result['web_url']}")
+                else:
+                    print("⚠ Failed to upload EML file to OneDrive")
             
             # Get the output folder URL
             try:
@@ -1181,64 +1215,65 @@ def watch_mode():
                         else:
                             print(f"[DEBUG] WARNING: email_metadata is empty or None!")
                         
-                        # Extract policy number from email metadata using LLM
-                        claims_folder_path = None
-                        email_id = email_metadata.get("id", "")
-                        received_datetime = email_metadata.get("receivedDateTime", "")
-                        
-                        print(f"[DEBUG] email_id = '{email_id}'")
-                        print(f"[DEBUG] received_datetime = '{received_datetime}'")
-                        
-                        print(f"\n🔍 Extracting policy number from email...")
-                        subject = email_metadata.get("subject", "")
-                        body = email_metadata.get("bodyPreview", "") or email_metadata.get("body", "")
-                        
-                        print(f"[DEBUG] subject = '{subject}'")
-                        print(f"[DEBUG] body preview = '{body[:100] if body else 'EMPTY'}...'")
-                        
-                        # Use the agent to extract policy number
-                        policy_number = fraud_system.agent.extract_policy_number(subject, body)
-                        
-                        # Create folder name: <policy_number>_<current_system_time>
-                        folder_time = datetime.now().strftime("%Y_%m_%dT%H_%M_%S")
-                        
-                        claim_subfolder_name = f"{policy_number}_{folder_time}"
-                        claims_fraud_folder = fraud_system.onedrive_claims_fraud_folder
-                        
-                        # Create the subfolder in Claims_fraud
-                        print(f"\n📁 Creating claims folder: {claims_fraud_folder}/{claim_subfolder_name}")
-                        folder_id, claims_folder_path = onedrive.create_subfolder(claims_fraud_folder, claim_subfolder_name)
-                        
-                        if claims_folder_path:
-                            print(f"   ✓ Claims folder ready: {claims_folder_path}")
-                            
-                            # Create email URL shortcut in the folder
-                            if email_id:
-                                email_url = f"https://outlook.office.com/mail/inbox/id/{email_id}"
-                                print(f"\n🔗 Creating email link shortcut...")
-                                shortcut_result = onedrive.create_url_shortcut(claims_folder_path, "Original_Email", email_url)
-                                if shortcut_result:
-                                    print(f"   ✓ Email shortcut created: {email_url}")
-                                else:
-                                    print(f"   ⚠ Failed to create email shortcut")
-                        else:
-                            print(f"   ⚠ Failed to create claims folder, using default output folder")
-                        
-                        # Process the PDF
+                        # Process the PDF FIRST
                         print(f"\n🔍 Processing claim: {pdf_filename}")
                         results = fraud_system.analyze_claim(pdf_path)
                         
                         if "error" in results:
                             print(f"\n✗ Analysis failed: {results['error']}")
                         else:
-                            # Generate report and send email, using claims_folder_path for output
+                            # Generate report and upload PDF to output_attachments IMMEDIATELY
                             fraud_system.generate_report(results, output_format="console")
+                            
+                            # PRIORITY: Save results and upload PDF to output_attachments FIRST
+                            # Pass claims_folder_path=None initially to skip claims folder upload
                             fraud_system.save_results(
                                 results, 
                                 email_metadata=email_metadata, 
                                 input_pdf_path=pdf_path,
-                                claims_folder_path=claims_folder_path
+                                claims_folder_path=None  # Upload to output_attachments only for now
                             )
+                            
+                            # NOW extract policy number and create claims folder
+                            email_id = email_metadata.get("id", "")
+                            received_datetime = email_metadata.get("receivedDateTime", "")
+                            
+                            print(f"\n[DEBUG] email_id = '{email_id}'")
+                            print(f"[DEBUG] received_datetime = '{received_datetime}'")
+                            
+                            print(f"\n🔍 Extracting policy number from email...")
+                            subject = email_metadata.get("subject", "")
+                            body = email_metadata.get("bodyPreview", "") or email_metadata.get("body", "")
+                            
+                            print(f"[DEBUG] subject = '{subject}'")
+                            print(f"[DEBUG] body preview = '{body[:100] if body else 'EMPTY'}...'")
+                            
+                            # Use the agent to extract policy number
+                            policy_number = fraud_system.agent.extract_policy_number(subject, body)
+                            
+                            # Create folder name: <policy_number>_<current_system_time>
+                            folder_time = datetime.now().strftime("%Y_%m_%dT%H_%M_%S")
+                            
+                            claim_subfolder_name = f"{policy_number}_{folder_time}"
+                            claims_fraud_folder = fraud_system.onedrive_claims_fraud_folder
+                            
+                            # Create the subfolder in Claims_fraud
+                            print(f"\n📁 Creating claims folder: {claims_fraud_folder}/{claim_subfolder_name}")
+                            folder_id, claims_folder_path = onedrive.create_subfolder(claims_fraud_folder, claim_subfolder_name)
+                            
+                            if claims_folder_path:
+                                print(f"   ✓ Claims folder ready: {claims_folder_path}")
+                                
+                                # Upload PDF to claims folder (already uploaded to output_attachments)
+                                pdf_path_local = f"output/{os.path.splitext(os.path.basename(pdf_path))[0]}_report.pdf"
+                                if os.path.exists(pdf_path_local):
+                                    print(f"\n📤 Uploading PDF to claims folder...")
+                                    upload_result = onedrive.upload_file_to_path(pdf_path_local, claims_folder_path)
+                                    if upload_result:
+                                        print(f"   ✓ PDF uploaded to claims folder: {upload_result['name']}")
+                            else:
+                                print(f"   ⚠ Failed to create claims folder")
+                            
                             print(f"\n✓ Analysis complete for {pdf_filename}!")
                         
                         # Move local JSON to processed_input folder (keep locally for reference)
@@ -1313,7 +1348,7 @@ def watch_mode():
                 print("   Will retry in 10 seconds...")
             
             # Wait before next check (adjust polling interval as needed)
-            time.sleep(10)  # Check every 10 seconds
+            time.sleep(5)  # Check every 10 seconds
             
     except KeyboardInterrupt:
         print("\n\n" + "="*70)
