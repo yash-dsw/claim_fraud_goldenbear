@@ -646,6 +646,7 @@ class FraudDetectionSystem:
         
         # PRIORITY: Upload PDF to Output_attachments folder IMMEDIATELY (before anything else)
         report_web_url = None
+        claims_report_web_url = None  # URL for claims_fraud folder file
         if self.onedrive_client and pdf_path:
             print(f"\n📤 PRIORITY: Uploading PDF to {self.onedrive_output_folder}...")
             upload_result = self.onedrive_client.upload_file(pdf_path, self.onedrive_output_folder)
@@ -699,6 +700,7 @@ class FraudDetectionSystem:
                 if upload_result:
                     print(f"✓ PDF report uploaded to {upload_folder}: {upload_result['name']}")
                     if upload_result.get('web_url'):
+                        claims_report_web_url = upload_result['web_url']  # Capture claims_fraud URL
                         print(f"  View online: {upload_result['web_url']}")
                 else:
                     print(f"⚠ Failed to upload PDF report to {upload_folder}")
@@ -734,12 +736,15 @@ class FraudDetectionSystem:
                 recipient = get_recipient_email(email_metadata)
                 if recipient:
                     print(f"\n📧 Sending fraud report email to: {recipient}")
+                    # ONLY use claims_fraud URLs if available, otherwise use None (don't show output_attachments)
+                    email_report_url = claims_report_web_url if claims_report_web_url else None
+                    email_folder_url = output_folder_url if claims_folder_path else None  # Only if claims_fraud
                     if self.email_sender.send_fraud_report_email(
                         recipient, email_metadata, html_content,
                         input_pdf_path=input_pdf_path,
                         output_pdf_path=pdf_path,
-                        report_web_url=report_web_url,
-                        output_folder_url=output_folder_url
+                        report_web_url=email_report_url,
+                        output_folder_url=email_folder_url
                     ):
                         print(f"✓ Email sent successfully to {recipient}")
                     else:
@@ -1222,24 +1227,15 @@ def watch_mode():
                         if "error" in results:
                             print(f"\n✗ Analysis failed: {results['error']}")
                         else:
-                            # Generate report and upload PDF to output_attachments IMMEDIATELY
+                            # Generate report
                             fraud_system.generate_report(results, output_format="console")
                             
-                            # PRIORITY: Save results and upload PDF to output_attachments FIRST
-                            # Pass claims_folder_path=None initially to skip claims folder upload
-                            fraud_system.save_results(
-                                results, 
-                                email_metadata=email_metadata, 
-                                input_pdf_path=pdf_path,
-                                claims_folder_path=None  # Upload to output_attachments only for now
-                            )
-                            
-                            # NOW extract policy number and create claims folder
+                            # FIRST extract policy number and create claims folder
                             email_id = email_metadata.get("id", "")
                             received_datetime = email_metadata.get("receivedDateTime", "")
                             
                             print(f"\n[DEBUG] email_id = '{email_id}'")
-                            print(f"[DEBUG] received_datetime = '{received_datetime}'")
+                            print(f"\n[DEBUG] received_datetime = '{received_datetime}'")
                             
                             print(f"\n🔍 Extracting policy number from email...")
                             subject = email_metadata.get("subject", "")
@@ -1251,10 +1247,8 @@ def watch_mode():
                             # Use the agent to extract policy number
                             policy_number = fraud_system.agent.extract_policy_number(subject, body)
                             
-                            # Create folder name: <policy_number>_<current_system_time>
-                            folder_time = datetime.now().strftime("%Y_%m_%dT%H_%M_%S")
-                            
-                            claim_subfolder_name = f"{policy_number}_{folder_time}"
+                            # Create folder name
+                            claim_subfolder_name = f"CN_{policy_number}"
                             claims_fraud_folder = fraud_system.onedrive_claims_fraud_folder
                             
                             # Create the subfolder in Claims_fraud
@@ -1263,16 +1257,17 @@ def watch_mode():
                             
                             if claims_folder_path:
                                 print(f"   ✓ Claims folder ready: {claims_folder_path}")
-                                
-                                # Upload PDF to claims folder (already uploaded to output_attachments)
-                                pdf_path_local = f"output/{os.path.splitext(os.path.basename(pdf_path))[0]}_report.pdf"
-                                if os.path.exists(pdf_path_local):
-                                    print(f"\n📤 Uploading PDF to claims folder...")
-                                    upload_result = onedrive.upload_file_to_path(pdf_path_local, claims_folder_path)
-                                    if upload_result:
-                                        print(f"   ✓ PDF uploaded to claims folder: {upload_result['name']}")
                             else:
                                 print(f"   ⚠ Failed to create claims folder")
+                                claims_folder_path = None
+                            
+                            # NOW save results with claims_folder_path - this uploads files and sends email with correct URLs
+                            fraud_system.save_results(
+                                results, 
+                                email_metadata=email_metadata, 
+                                input_pdf_path=pdf_path,
+                                claims_folder_path=claims_folder_path  # Use claims_fraud folder
+                            )
                             
                             print(f"\n✓ Analysis complete for {pdf_filename}!")
                         
