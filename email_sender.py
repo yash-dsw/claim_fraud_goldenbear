@@ -160,42 +160,66 @@ class EmailSender:
     def download_email_as_eml(self, message_id, output_path=None, user_email=None):
         """
         Download an email message as EML file using Microsoft Graph API.
+        Uses Internet Message ID which is universal across all mailboxes.
         
         Args:
-            message_id: The message ID from the email metadata JSON
+            message_id: The Internet Message ID from the email metadata JSON (internetMessageId field)
             output_path: Optional path to save the EML file. If not provided, 
-                        will save to 'input/{message_id}.eml'
+                        will save to 'input/{sanitized_message_id}.eml'
             user_email: Email of the mailbox to access (defaults to self.user_email)
             
         Returns:
             Path to the saved EML file if successful, None otherwise
         """
+        
         try:
             mailbox = user_email or self.user_email
             
-            # Microsoft Graph API endpoint to get message in MIME format
-            url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages/{message_id}/$value"
+            # Microsoft Graph API endpoint using Internet Message ID filter
+            # Internet Message ID doesn't need URL encoding
+            url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages?$filter=internetMessageId eq '{message_id}'"
             
             headers = self._get_headers()
-            # Remove Content-Type header for raw message download
-            headers.pop('Content-Type', None)
             
+            # First, get the message metadata to find the actual message
             response = requests.get(url, headers=headers)
             
             if response.status_code == 200:
-                # Determine output path
-                if not output_path:
-                    os.makedirs("input", exist_ok=True)
-                    output_path = os.path.join("input", f"{message_id}.eml")
+                messages = response.json().get('value', [])
                 
-                # Save the EML file
-                with open(output_path, 'wb') as f:
-                    f.write(response.content)
+                if not messages:
+                    print(f"[ERROR] No message found with Internet Message ID: {message_id}")
+                    return None
                 
-                print(f"✓ Downloaded EML file: {output_path}")
-                return output_path
+                # Get the first message's ID
+                graph_message_id = messages[0]['id']
+                
+                # Now download the actual EML using the Graph message ID
+                eml_url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages/{graph_message_id}/$value"
+                headers_eml = self._get_headers()
+                headers_eml.pop('Content-Type', None)
+                
+                eml_response = requests.get(eml_url, headers=headers_eml)
+                
+                if eml_response.status_code == 200:
+                    # Determine output path
+                    if not output_path:
+                        os.makedirs("input", exist_ok=True)
+                        # Sanitize message_id for filename
+                        safe_filename = message_id.replace('<', '').replace('>', '').replace('@', '_')
+                        output_path = os.path.join("input", f"{safe_filename}.eml")
+                    
+                    # Save the EML file
+                    with open(output_path, 'wb') as f:
+                        f.write(eml_response.content)
+                    
+                    print(f"✓ Downloaded EML file: {output_path}")
+                    return output_path
+                else:
+                    print(f"[ERROR] Failed to download EML: {eml_response.status_code} - {eml_response.text}")
+                    return None
             else:
-                print(f"[ERROR] Failed to download email: {response.status_code} - {response.text}")
+                print(f"[ERROR] Failed to find message: {response.status_code} - {response.text}")
                 return None
                 
         except Exception as e:
@@ -608,19 +632,19 @@ def get_recipient_email(email_metadata):
 
 def get_message_id_from_metadata(email_metadata):
     """
-    Extract the message ID from email metadata.
+    Extract the Internet Message ID from email metadata.
     
     Args:
         email_metadata: Dictionary loaded from companion JSON
         
     Returns:
-        Message ID string or None
+        Internet Message ID string or None
     """
     if not email_metadata:
         return None
     
-    # The 'id' field contains the Graph API message ID
-    message_id = email_metadata.get("id", "")
+    # Use 'internetMessageId' field which is universal across mailboxes
+    message_id = email_metadata.get("internetMessageId", "")
     
     if message_id and isinstance(message_id, str):
         return message_id.strip()
@@ -631,6 +655,7 @@ def get_message_id_from_metadata(email_metadata):
 def download_eml_from_json(json_path, email_sender, output_dir="input"):
     """
     Download EML file based on metadata from a companion JSON file.
+    Uses the receiver's email (toRecipients) from the JSON for fetching.
     
     Args:
         json_path: Path to the .pdf.json file containing email metadata
@@ -654,14 +679,22 @@ def download_eml_from_json(json_path, email_sender, output_dir="input"):
         print(f"[ERROR] No message ID found in metadata")
         return None
     
+    # Extract receiver's email (toRecipients) from metadata
+    receiver_email = get_recipient_email(metadata)
+    
+    if not receiver_email:
+        print(f"[ERROR] No receiver email (toRecipients) found in metadata")
+        return None
+    
     # Generate EML filename based on JSON filename
     json_basename = os.path.basename(json_path)
     # Remove .pdf.json extension and add .eml
     eml_filename = json_basename.replace('.pdf.json', '.eml')
     eml_path = os.path.join(output_dir, eml_filename)
     
-    # Download the EML file
+    # Download the EML file using receiver's email
     print(f"📧 Downloading EML for message ID: {message_id}")
-    result = email_sender.download_email_as_eml(message_id, eml_path)
+    print(f"   Using receiver's mailbox: {receiver_email}")
+    result = email_sender.download_email_as_eml(message_id, eml_path, user_email=receiver_email)
     
     return result

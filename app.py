@@ -662,18 +662,30 @@ class FraudDetectionSystem:
         # Download EML file if email metadata is available
         eml_path = None
         if email_metadata and self.email_sender:
-            from email_sender import get_message_id_from_metadata
+            from email_sender import get_message_id_from_metadata, get_recipient_email
             message_id = get_message_id_from_metadata(email_metadata)
             
             if message_id:
                 eml_filename = f"{base_name}.eml" if input_pdf_path else f"{output_base_name}.eml"
                 eml_path = os.path.join(output_dir, eml_filename)
                 
+                # Get the receiver's email from metadata to access the correct mailbox
+                receiver_email = get_recipient_email(email_metadata)
+                
                 print(f"\n📧 Downloading original email as EML...")
-                downloaded_eml = self.email_sender.download_email_as_eml(
-                    message_id=message_id,
-                    output_path=eml_path
-                )
+                if receiver_email:
+                    print(f"   Using mailbox: {receiver_email}")
+                    downloaded_eml = self.email_sender.download_email_as_eml(
+                        message_id=message_id,
+                        output_path=eml_path,
+                        user_email=receiver_email
+                    )
+                else:
+                    print(f"   Using default service account mailbox")
+                    downloaded_eml = self.email_sender.download_email_as_eml(
+                        message_id=message_id,
+                        output_path=eml_path
+                    )
                 
                 if downloaded_eml:
                     print(f"✓ EML file saved: {eml_path}")
