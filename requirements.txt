@@ -5,3 +5,5 @@ openai
 requests
 msal
 playwright
+flask
+flask-cors

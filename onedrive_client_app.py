@@ -582,6 +582,35 @@ class OneDriveClientApp:
             print(f"  ✗ Error getting folder info: {str(e)}")
             return None
 
+    def get_file_info(self, file_path):
+        """Get file information for a full file path including web URL.
+        
+        Args:
+            file_path: Full OneDrive path to file (e.g., "Claims_fraud/P123_2026-01-27/report.pdf")
+        
+        Returns:
+            Dictionary with file info including webUrl, or None if failed
+        """
+        try:
+            file_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{file_path}"
+            response = requests.get(file_url, headers=self._get_headers())
+            
+            if response.status_code == 200:
+                result = response.json()
+                return {
+                    "id": result.get("id"),
+                    "name": result.get("name"),
+                    "webUrl": result.get("webUrl"),
+                    "size": result.get("size"),
+                    "success": True
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"  ✗ Error getting file info: {str(e)}")
+            return None
+
 
 def test_app_auth():
     """Test OneDrive connection with app credentials."""

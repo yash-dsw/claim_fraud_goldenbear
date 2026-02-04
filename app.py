@@ -598,7 +598,7 @@ class FraudDetectionSystem:
 """
         return html
     
-    def save_results(self, results, output_dir="output", email_metadata=None, input_pdf_path=None, claims_folder_path=None):
+    def save_results(self, results, output_dir="output", email_metadata=None, input_pdf_path=None, claims_folder_path=None, confirmed_policy_number=None):
         """Save results to files and optionally send email.
         
         Args:
@@ -611,8 +611,20 @@ class FraudDetectionSystem:
             input_pdf_path: Optional path to the original claim PDF (for email attachment)
             claims_folder_path: Optional OneDrive folder path for claims (e.g., "Claims_fraud/P123_2026-01-27")
                               - If provided, outputs will be uploaded to this folder instead of default output folder
+            confirmed_policy_number: Optional confirmed/updated policy number from frontend
+                                    - If provided, will override the policy number in results before generating reports
         """
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Update results with confirmed policy number if provided
+        if confirmed_policy_number:
+            print(f"[SAVE_RESULTS] Using confirmed policy number: {confirmed_policy_number}")
+            if 'claim_data' in results:
+                results['claim_data']['policy_number'] = confirmed_policy_number
+            if 'policy_data' in results:
+                results['policy_data']['policy_number'] = confirmed_policy_number
+            if 'metadata' in results:
+                results['metadata']['policy_number'] = confirmed_policy_number
         
         # Generate output filename based on input PDF name
         if input_pdf_path:
