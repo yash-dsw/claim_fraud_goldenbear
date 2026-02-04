@@ -142,7 +142,7 @@ def health_check():
     })
 
 
-@app.route('/api/pending', methods=['GET'])
+@app.route('/claims-api/pending', methods=['GET'])
 def get_pending_files():
     """
     Get list of files detected by watcher that are pending frontend processing
@@ -181,7 +181,7 @@ def get_pending_files():
     }), 200
 
 
-@app.route('/api/pending/latest', methods=['GET'])
+@app.route('/claims-api/pending/latest', methods=['GET'])
 def get_latest_pending_file():
     """
     Get the most recent file detected by watcher
@@ -215,7 +215,7 @@ def get_latest_pending_file():
     }), 200
 
 
-@app.route('/api/email-fields', methods=['POST'])
+@app.route('/claims-api/email-fields', methods=['POST'])
 def confirm_email_fields():
     """
     POST endpoint to confirm/update email fields from frontend
@@ -346,7 +346,7 @@ def confirm_email_fields():
             'confirmed_email_fields': email_fields,
             'policy_number_changed': policy_number_changed,
             'form_pdf_uploaded': form_pdf_uploaded,
-            'message': 'Email fields confirmed successfully. Call POST /api/process to continue.'
+            'message': 'Email fields confirmed successfully. Call POST /claims-api/process to continue.'
         }), 200
     
     except Exception as e:
@@ -356,7 +356,7 @@ def confirm_email_fields():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/process', methods=['POST'])
+@app.route('/claims-api/process', methods=['POST'])
 def process_claim():
     """
     PART 2: Process claim after frontend confirms email fields
@@ -611,7 +611,7 @@ def process_claim():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/output-pdf', methods=['GET'])
+@app.route('/claims-api/output-pdf', methods=['GET'])
 def get_output_pdf():
     """
     Get the OneDrive URL to the most recently generated output PDF
@@ -713,7 +713,7 @@ def get_output_pdf():
     }), 200
 
 
-@app.route('/api/sessions', methods=['GET'])
+@app.route('/claims-api/sessions', methods=['GET'])
 def list_sessions():
     """List all active sessions (for debugging)"""
     cleanup_expired_sessions()
@@ -723,7 +723,7 @@ def list_sessions():
     })
 
 
-@app.route('/api/sessions/<session_id>', methods=['DELETE'])
+@app.route('/claims-api/sessions/<session_id>', methods=['DELETE'])
 def delete_session(session_id: str):
     """Delete a specific session"""
     if session_id in sessions:
