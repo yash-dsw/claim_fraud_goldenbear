@@ -656,20 +656,36 @@ class FraudDetectionSystem:
             pdf_path = None
             print("⚠ PDF generation failed, continuing without PDF")
         
-        # PRIORITY: Upload PDF to Output_attachments folder IMMEDIATELY (before anything else)
+        # PRIORITY: Upload PDF to claims_fraud subfolder if available (before anything else)
         report_web_url = None
         claims_report_web_url = None  # URL for claims_fraud folder file
         if self.onedrive_client and pdf_path:
-            print(f"\n📤 PRIORITY: Uploading PDF to {self.onedrive_output_folder}...")
-            upload_result = self.onedrive_client.upload_file(pdf_path, self.onedrive_output_folder)
-            
-            if upload_result:
-                print(f"✓ PDF uploaded to {self.onedrive_output_folder}: {upload_result['name']}")
-                if upload_result.get('web_url'):
-                    report_web_url = upload_result['web_url']
-                    print(f"  View online: {upload_result['web_url']}")
+            # Determine priority upload folder
+            if claims_folder_path:
+                # PRIORITY: Upload to claims_fraud subfolder
+                print(f"\n📤 PRIORITY: Uploading PDF to claims_fraud subfolder: {claims_folder_path}...")
+                upload_result = self.onedrive_client.upload_file_to_path(pdf_path, claims_folder_path)
+                
+                if upload_result:
+                    print(f"✓ PDF uploaded to {claims_folder_path}: {upload_result['name']}")
+                    if upload_result.get('web_url'):
+                        claims_report_web_url = upload_result['web_url']
+                        report_web_url = upload_result['web_url']  # Use claims_fraud URL as primary
+                        print(f"  View online: {upload_result['web_url']}")
+                else:
+                    print(f"⚠ Failed to upload PDF to {claims_folder_path}")
             else:
-                print(f"⚠ Failed to upload PDF to {self.onedrive_output_folder}")
+                # Fallback: Upload to Output_attachments if no claims folder
+                print(f"\n📤 Uploading PDF to {self.onedrive_output_folder}...")
+                upload_result = self.onedrive_client.upload_file(pdf_path, self.onedrive_output_folder)
+                
+                if upload_result:
+                    print(f"✓ PDF uploaded to {self.onedrive_output_folder}: {upload_result['name']}")
+                    if upload_result.get('web_url'):
+                        report_web_url = upload_result['web_url']
+                        print(f"  View online: {upload_result['web_url']}")
+                else:
+                    print(f"⚠ Failed to upload PDF to {self.onedrive_output_folder}")
         
         # Download EML file if email metadata is available
         eml_path = None
@@ -717,17 +733,7 @@ class FraudDetectionSystem:
             upload_folder = claims_folder_path if claims_folder_path else self.onedrive_output_folder
             use_path_upload = claims_folder_path is not None
             
-            # Upload PDF to claims_fraud folder (if different from output folder)
-            if pdf_path and use_path_upload:
-                upload_result = self.onedrive_client.upload_file_to_path(pdf_path, upload_folder)
-                
-                if upload_result:
-                    print(f"✓ PDF report uploaded to {upload_folder}: {upload_result['name']}")
-                    if upload_result.get('web_url'):
-                        claims_report_web_url = upload_result['web_url']  # Capture claims_fraud URL
-                        print(f"  View online: {upload_result['web_url']}")
-                else:
-                    print(f"⚠ Failed to upload PDF report to {upload_folder}")
+            # NOTE: PDF already uploaded above as priority, so skip duplicate upload here
             
             # Upload EML file if downloaded
             if eml_path:
@@ -760,9 +766,9 @@ class FraudDetectionSystem:
                 recipient = get_recipient_email(email_metadata)
                 if recipient:
                     print(f"\n📧 Sending fraud report email to: {recipient}")
-                    # ONLY use claims_fraud URLs if available, otherwise use None (don't show output_attachments)
-                    email_report_url = claims_report_web_url if claims_report_web_url else None
-                    email_folder_url = output_folder_url if claims_folder_path else None  # Only if claims_fraud
+                    # Prioritize claims_fraud URLs, fallback to output_attachments if not available
+                    email_report_url = claims_report_web_url if claims_report_web_url else report_web_url
+                    email_folder_url = output_folder_url if claims_folder_path else None
                     if self.email_sender.send_fraud_report_email(
                         recipient, email_metadata, html_content,
                         input_pdf_path=input_pdf_path,

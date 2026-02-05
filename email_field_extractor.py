@@ -96,7 +96,7 @@ class EmailFieldExtractor:
         if not email_metadata:
             return self._empty_result()
         
-        # Extract email components
+        # Extract email components - DIRECTLY use the JSON fields first
         from_field = email_metadata.get("from", "")
         to_field = email_metadata.get("toRecipients", "")
         subject = email_metadata.get("subject", "")
@@ -106,7 +106,15 @@ class EmailFieldExtractor:
         if isinstance(to_field, list):
             to_field = ", ".join(to_field) if to_field else ""
         
-        # Create prompt with email data
+        # DIRECTLY extract sender and receiver emails from JSON fields
+        sender_email = from_field if from_field else "Not Found"
+        receiver_email = to_field if to_field else "Not Found"
+        
+        # DIRECTLY extract sender and receiver emails from JSON fields
+        sender_email = from_field if from_field else "Not Found"
+        receiver_email = to_field if to_field else "Not Found"
+        
+        # Create prompt with email data for extracting names and other details
         prompt = EMAIL_EXTRACTION_PROMPT.format(
             from_email=from_field,
             to_email=to_field,
@@ -142,6 +150,10 @@ class EmailFieldExtractor:
             # Parse JSON
             extracted_data = json.loads(response_text)
             
+            # OVERRIDE LLM-extracted emails with the actual JSON field values
+            extracted_data['sender_email'] = sender_email
+            extracted_data['receiver_email'] = receiver_email
+            
             # Add aliases for backward compatibility
             extracted_data['broker_email'] = extracted_data.get('sender_email', 'Not Found')
             extracted_data['broker_name'] = extracted_data.get('sender_name', 'Not Found')
@@ -163,11 +175,47 @@ class EmailFieldExtractor:
         except json.JSONDecodeError as e:
             print(f"[EMAIL_EXTRACTOR] ✗ Failed to parse LLM response as JSON: {str(e)}")
             print(f"[EMAIL_EXTRACTOR]   Response: {response_text}")
-            return self._empty_result()
+            # Return with at least the emails we extracted directly
+            return {
+                "sender_email": sender_email,
+                "sender_name": "Not Found",
+                "receiver_email": receiver_email,
+                "receiver_name": "Not Found",
+                "policy_number": "Not Found",
+                "agency_name": "Not Found",
+                "agency_id": "Not Found",
+                "email_summary": "Not Found",
+                "broker_email": sender_email,
+                "broker_name": "Not Found",
+                "underwriter_email": receiver_email,
+                "underwriter_name": "Not Found",
+                "broker_agency_name": "Not Found",
+                "broker_agency_id": "Not Found",
+                "comments": "",
+                "timestamp": ""
+            }
         
         except Exception as e:
             print(f"[EMAIL_EXTRACTOR] ✗ Email field extraction error: {str(e)}")
-            return self._empty_result()
+            # Return with at least the emails we extracted directly
+            return {
+                "sender_email": sender_email,
+                "sender_name": "Not Found",
+                "receiver_email": receiver_email,
+                "receiver_name": "Not Found",
+                "policy_number": "Not Found",
+                "agency_name": "Not Found",
+                "agency_id": "Not Found",
+                "email_summary": "Not Found",
+                "broker_email": sender_email,
+                "broker_name": "Not Found",
+                "underwriter_email": receiver_email,
+                "underwriter_name": "Not Found",
+                "broker_agency_name": "Not Found",
+                "broker_agency_id": "Not Found",
+                "comments": "",
+                "timestamp": ""
+            }
     
     def _empty_result(self) -> dict:
         """Return empty result structure"""
