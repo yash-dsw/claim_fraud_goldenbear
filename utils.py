@@ -365,3 +365,16 @@ def parse_amount(amount_str):
         return float(cleaned)
     except:
         return 0.0
+
+
+def generate_unique_claim_id():
+    """
+    Generate a unique 7-digit random claim ID.
+    Returns a string representation of a random number between 1000000 and 9999999.
+    
+    Returns:
+        str: A 7-digit claim ID
+    """
+    import random
+    claim_id = random.randint(1000000, 9999999)
+    return str(claim_id)

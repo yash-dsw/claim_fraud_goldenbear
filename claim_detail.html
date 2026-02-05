@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claim Details - Golden Bear Insurance</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #b8860b 0%, #daa520 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        .back-btn {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 2px solid white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .back-btn:hover {
+            background: white;
+            color: #b8860b;
+        }
+
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .loading-spinner {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #b8860b;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .card-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-approved {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .status-pending,
+        .status-submitted {
+            background: #fef3c7;
+            color: #78350f;
+        }
+
+        .status-rejected {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .status-in-review {
+            background: #e6f3ff;
+            color: #0066cc;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .info-item {
+            margin-bottom: 15px;
+        }
+
+        .info-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 15px;
+            color: #2d3748;
+            font-weight: 500;
+        }
+
+        .info-value.empty {
+            color: #a0aec0;
+            font-style: italic;
+        }
+
+        .section-divider {
+            border-top: 1px solid #e2e8f0;
+            margin: 30px 0;
+        }
+
+        .description-box {
+            background: #f7fafc;
+            border-left: 4px solid #b8860b;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+
+        .description-box h4 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 10px;
+        }
+
+        .description-box p {
+            font-size: 14px;
+            color: #4a5568;
+            line-height: 1.6;
+        }
+
+        .boolean-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .boolean-true {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .boolean-false {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .error-message {
+            background: #fed7d7;
+            border-left: 4px solid #c53030;
+            color: #742a2a;
+            padding: 20px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
+        .no-policy {
+            background: #fef3c7;
+            border-left: 4px solid #d69e2e;
+            color: #78350f;
+            padding: 20px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
+        @media (max-width: 768px) {
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .header-content {
+                flex-direction: column;
+                gap: 15px;
+                align-items: flex-start;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <div>Loading claim details...</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <h1>Claim Details</h1>
+                <a href="/claims" class="back-btn">← Back to Claims</a>
+            </div>
+        </div>
+
+        <div id="content">
+            <!-- Content will be loaded here -->
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = window.location.origin;
+
+        // Get claim ID from URL
+        function getClaimIdFromUrl() {
+            const pathParts = window.location.pathname.split('/');
+            return pathParts[pathParts.length - 1];
+        }
+
+        // Load claim details on page load
+        document.addEventListener('DOMContentLoaded', loadClaimDetails);
+
+        async function loadClaimDetails() {
+            const claimId = getClaimIdFromUrl();
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const content = document.getElementById('content');
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/claims/${claimId}`);
+                const data = await response.json();
+
+                loadingOverlay.style.display = 'none';
+
+                if (data.success) {
+                    renderClaimDetails(data.claim, data.policy);
+                } else {
+                    content.innerHTML = `
+                        <div class="error-message">
+                            <strong>Error:</strong> ${data.error || 'Failed to load claim details'}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                loadingOverlay.style.display = 'none';
+                console.error('Error fetching claim details:', error);
+                content.innerHTML = `
+                    <div class="error-message">
+                        <strong>Error:</strong> Failed to load claim details. Make sure the server is running.
+                    </div>
+                `;
+            }
+        }
+
+        function renderClaimDetails(claim, policy) {
+            const content = document.getElementById('content');
+
+            const claimHtml = `
+                <!-- Claim Information Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Claim Information</h2>
+                        <span class="status-badge ${getStatusClass(claim.claim_status)}">
+                            ${claim.claim_status || 'Pending'}
+                        </span>
+                    </div>
+
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Claim ID</div>
+                            <div class="info-value">${claim.claim_id || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Policy ID</div>
+                            <div class="info-value">${claim.policy_id || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Claim Type</div>
+                            <div class="info-value">${claim.claim_type || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Date of Loss</div>
+                            <div class="info-value">${formatDate(claim.date_of_loss) || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Claim Submitted</div>
+                            <div class="info-value">${formatDateTime(claim.claim_submitted_at) || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Record Created</div>
+                            <div class="info-value">${formatDateTime(claim.created_at) || '—'}</div>
+                        </div>
+                    </div>
+
+                    ${claim.claim_description ? `
+                        <div class="description-box">
+                            <h4>Claim Description</h4>
+                            <p>${claim.claim_description}</p>
+                        </div>
+                    ` : ''}
+                </div>
+
+                <!-- Reporting Party Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Reporting Party</h2>
+                    </div>
+
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">First Name</div>
+                            <div class="info-value ${!claim.reporting_first_name ? 'empty' : ''}">${claim.reporting_first_name || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Last Name</div>
+                            <div class="info-value ${!claim.reporting_last_name ? 'empty' : ''}">${claim.reporting_last_name || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Email</div>
+                            <div class="info-value ${!claim.reporting_email ? 'empty' : ''}">${claim.reporting_email || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Phone</div>
+                            <div class="info-value ${!claim.reporting_phone ? 'empty' : ''}">${claim.reporting_phone || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Address</div>
+                            <div class="info-value ${!claim.reporting_address ? 'empty' : ''}">${claim.reporting_address || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">City</div>
+                            <div class="info-value ${!claim.reporting_city ? 'empty' : ''}">${claim.reporting_city || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">State</div>
+                            <div class="info-value ${!claim.reporting_state ? 'empty' : ''}">${claim.reporting_state || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">ZIP Code</div>
+                            <div class="info-value ${!claim.reporting_zip ? 'empty' : ''}">${claim.reporting_zip || 'Not provided'}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Insured Party Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Insured Party</h2>
+                        <span class="boolean-badge ${claim.insured_same_as_reporter ? 'boolean-true' : 'boolean-false'}">
+                            ${claim.insured_same_as_reporter ? 'Same as Reporter' : 'Different from Reporter'}
+                        </span>
+                    </div>
+
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">First Name</div>
+                            <div class="info-value ${!claim.insured_first_name ? 'empty' : ''}">${claim.insured_first_name || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Last Name</div>
+                            <div class="info-value ${!claim.insured_last_name ? 'empty' : ''}">${claim.insured_last_name || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Email</div>
+                            <div class="info-value ${!claim.insured_email ? 'empty' : ''}">${claim.insured_email || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Phone</div>
+                            <div class="info-value ${!claim.insured_phone ? 'empty' : ''}">${claim.insured_phone || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Address</div>
+                            <div class="info-value ${!claim.insured_address ? 'empty' : ''}">${claim.insured_address || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">City</div>
+                            <div class="info-value ${!claim.insured_city ? 'empty' : ''}">${claim.insured_city || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">State</div>
+                            <div class="info-value ${!claim.insured_state ? 'empty' : ''}">${claim.insured_state || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">ZIP Code</div>
+                            <div class="info-value ${!claim.insured_zip ? 'empty' : ''}">${claim.insured_zip || 'Not provided'}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Incident Details Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Incident Details</h2>
+                    </div>
+
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Injuries Reported</div>
+                            <div class="info-value">
+                                <span class="boolean-badge ${claim.injuries_reported ? 'boolean-true' : 'boolean-false'}">
+                                    ${claim.injuries_reported ? 'Yes' : 'No'}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Witness Present</div>
+                            <div class="info-value">
+                                <span class="boolean-badge ${claim.witness_present ? 'boolean-true' : 'boolean-false'}">
+                                    ${claim.witness_present ? 'Yes' : 'No'}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Police Report Filed</div>
+                            <div class="info-value">
+                                <span class="boolean-badge ${claim.police_report_filed ? 'boolean-true' : 'boolean-false'}">
+                                    ${claim.police_report_filed ? 'Yes' : 'No'}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    ${claim.witness_present ? `
+                        <div class="section-divider"></div>
+                        <h3 style="font-size: 16px; margin-bottom: 15px; color: #2d3748;">Witness Information</h3>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <div class="info-label">Witness First Name</div>
+                                <div class="info-value ${!claim.witness_first_name ? 'empty' : ''}">${claim.witness_first_name || 'Not provided'}</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-label">Witness Last Name</div>
+                                <div class="info-value ${!claim.witness_last_name ? 'empty' : ''}">${claim.witness_last_name || 'Not provided'}</div>
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+
+                ${policy ? renderPolicyCard(policy) : `
+                    <div class="no-policy">
+                        <strong>Note:</strong> No policy information found for Policy ID: ${claim.policy_id}
+                    </div>
+                `}
+            `;
+
+            content.innerHTML = claimHtml;
+        }
+
+        function renderPolicyCard(policy) {
+            return `
+                <!-- Policy Information Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Associated Policy Information</h2>
+                    </div>
+
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Policy ID</div>
+                            <div class="info-value">${policy.policy_id || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Policy Name</div>
+                            <div class="info-value">${policy.policy_name || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Policy Type</div>
+                            <div class="info-value">${policy.policy_type || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Policy Status</div>
+                            <div class="info-value">${policy.policy_status || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Beneficiary</div>
+                            <div class="info-value ${!policy.policy_beneficiary ? 'empty' : ''}">${policy.policy_beneficiary || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Insured Entity Type</div>
+                            <div class="info-value">${policy.insured_entity_type || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Property Type</div>
+                            <div class="info-value">${policy.property_type || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Coverage Type</div>
+                            <div class="info-value">${policy.coverage_type || '—'}</div>
+                        </div>
+                    </div>
+
+                    <div class="section-divider"></div>
+                    <h3 style="font-size: 16px; margin-bottom: 15px; color: #2d3748;">Policy Dates</h3>
+                    
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Start Date</div>
+                            <div class="info-value">${formatDate(policy.policy_start_date) || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">End Date</div>
+                            <div class="info-value">${formatDate(policy.policy_end_date) || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Issue Date</div>
+                            <div class="info-value">${formatDate(policy.policy_issue_date) || '—'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Duration (Years)</div>
+                            <div class="info-value">${policy.policy_duration_years || '—'}</div>
+                        </div>
+                    </div>
+
+                    <div class="section-divider"></div>
+                    <h3 style="font-size: 16px; margin-bottom: 15px; color: #2d3748;">Financial Details</h3>
+                    
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Sum Insured</div>
+                            <div class="info-value">${formatCurrency(policy.sum_insured, policy.currency)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Premium Amount</div>
+                            <div class="info-value">${formatCurrency(policy.premium_amount, policy.currency)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Deductible Amount</div>
+                            <div class="info-value">${formatCurrency(policy.deductible_amount, policy.currency)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Currency</div>
+                            <div class="info-value">${policy.currency || '—'}</div>
+                        </div>
+                    </div>
+
+                    <div class="section-divider"></div>
+                    <h3 style="font-size: 16px; margin-bottom: 15px; color: #2d3748;">Stakeholders</h3>
+                    
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Agent Name</div>
+                            <div class="info-value ${!policy.agent_name ? 'empty' : ''}">${policy.agent_name || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Broker Name</div>
+                            <div class="info-value ${!policy.broker_name ? 'empty' : ''}">${policy.broker_name || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Underwriter Name</div>
+                            <div class="info-value ${!policy.underwriter_name ? 'empty' : ''}">${policy.underwriter_name || 'Not provided'}</div>
+                        </div>
+                    </div>
+
+                    <div class="section-divider"></div>
+                    <h3 style="font-size: 16px; margin-bottom: 15px; color: #2d3748;">Locations</h3>
+                    
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Insured Address</div>
+                            <div class="info-value ${!policy.insured_address ? 'empty' : ''}">${policy.insured_address || 'Not provided'}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Risk Location</div>
+                            <div class="info-value ${!policy.risk_location ? 'empty' : ''}">${policy.risk_location || 'Not provided'}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function getStatusClass(status) {
+            const s = (status || '').toLowerCase().replace(/\s+/g, '-');
+            if (s.includes('approve')) return 'status-approved';
+            if (s.includes('reject') || s.includes('deny')) return 'status-rejected';
+            if (s.includes('review')) return 'status-in-review';
+            if (s.includes('submit')) return 'status-submitted';
+            return 'status-pending';
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return null;
+            try {
+                const date = new Date(dateStr);
+                return date.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric' 
+                });
+            } catch {
+                return dateStr;
+            }
+        }
+
+        function formatDateTime(dateStr) {
+            if (!dateStr) return null;
+            try {
+                const date = new Date(dateStr);
+                return date.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            } catch {
+                return dateStr;
+            }
+        }
+
+        function formatCurrency(amount, currency = 'USD') {
+            if (!amount) return '—';
+            try {
+                return new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: currency || 'USD'
+                }).format(amount);
+            } catch {
+                return `${currency} ${amount}`;
+            }
+        }
+    </script>
+</body>
+
+</html>

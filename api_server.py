@@ -10,9 +10,12 @@ import json
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Optional
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
 
 # Load environment variables
 load_dotenv()
@@ -20,7 +23,51 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend communication
 
-# Configuration
+# ============================================================================
+# DATABASE CONFIGURATION
+# ============================================================================
+
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'port': os.getenv('DB_PORT', '5432'),
+    'database': os.getenv('DB_NAME'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASS')
+}
+
+
+@contextmanager
+def get_db_connection():
+    """Context manager for database connections"""
+    conn = None
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        yield conn
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise e
+    finally:
+        if conn:
+            conn.close()
+
+
+def test_db_connection():
+    """Test database connection"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                return True
+    except Exception as e:
+        print(f"❌ Database connection failed: {e}")
+        return False
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 CONFIG = {
     "INPUT_FOLDER": "./input",
     "OUTPUT_FOLDER": "./output",
@@ -83,11 +130,203 @@ class SessionData:
         }
 
 
+# Remove expired sessions
 def cleanup_expired_sessions():
     """Remove expired sessions"""
     expired = [sid for sid, session in sessions.items() if session.is_expired()]
     for sid in expired:
         sessions.pop(sid, None)
+
+
+# ============================================================================
+# DATABASE OPERATIONS - CLAIMS
+# ============================================================================
+
+def insert_claim(claim_data):
+    """
+    Insert a new claim into claims_db
+    
+    Args:
+        claim_data: Dictionary containing claim fields
+    
+    Returns:
+        claim_id if successful, None otherwise
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                query = """
+                    INSERT INTO claims_db (
+                        claim_id, policy_id, claim_type, date_of_loss,
+                        claim_description, reporting_first_name, reporting_last_name,
+                        reporting_address, reporting_city, reporting_state,
+                        reporting_zip, reporting_email, reporting_phone,
+                        insured_same_as_reporter, insured_first_name, insured_last_name,
+                        insured_address, insured_city, insured_state,
+                        insured_zip, insured_email, insured_phone,
+                        injuries_reported, witness_present, witness_first_name,
+                        witness_last_name, police_report_filed, claim_status
+                    ) VALUES (
+                        %(claim_id)s, %(policy_id)s, %(claim_type)s, %(date_of_loss)s,
+                        %(claim_description)s, %(reporting_first_name)s, %(reporting_last_name)s,
+                        %(reporting_address)s, %(reporting_city)s, %(reporting_state)s,
+                        %(reporting_zip)s, %(reporting_email)s, %(reporting_phone)s,
+                        %(insured_same_as_reporter)s, %(insured_first_name)s, %(insured_last_name)s,
+                        %(insured_address)s, %(insured_city)s, %(insured_state)s,
+                        %(insured_zip)s, %(insured_email)s, %(insured_phone)s,
+                        %(injuries_reported)s, %(witness_present)s, %(witness_first_name)s,
+                        %(witness_last_name)s, %(police_report_filed)s, %(claim_status)s
+                    )
+                    ON CONFLICT (claim_id) DO UPDATE SET
+                        claim_status = EXCLUDED.claim_status,
+                        claim_description = EXCLUDED.claim_description
+                    RETURNING claim_id
+                """
+                
+                # Prepare data with defaults
+                prepared_data = {
+                    'claim_id': claim_data.get('claim_id'),
+                    'policy_id': claim_data.get('policy_id'),
+                    'claim_type': claim_data.get('claim_type'),
+                    'date_of_loss': claim_data.get('date_of_loss'),
+                    'claim_description': claim_data.get('claim_description'),
+                    'reporting_first_name': claim_data.get('reporting_first_name'),
+                    'reporting_last_name': claim_data.get('reporting_last_name'),
+                    'reporting_address': claim_data.get('reporting_address'),
+                    'reporting_city': claim_data.get('reporting_city'),
+                    'reporting_state': claim_data.get('reporting_state'),
+                    'reporting_zip': claim_data.get('reporting_zip'),
+                    'reporting_email': claim_data.get('reporting_email'),
+                    'reporting_phone': claim_data.get('reporting_phone'),
+                    'insured_same_as_reporter': claim_data.get('insured_same_as_reporter', False),
+                    'insured_first_name': claim_data.get('insured_first_name'),
+                    'insured_last_name': claim_data.get('insured_last_name'),
+                    'insured_address': claim_data.get('insured_address'),
+                    'insured_city': claim_data.get('insured_city'),
+                    'insured_state': claim_data.get('insured_state'),
+                    'insured_zip': claim_data.get('insured_zip'),
+                    'insured_email': claim_data.get('insured_email'),
+                    'insured_phone': claim_data.get('insured_phone'),
+                    'injuries_reported': claim_data.get('injuries_reported', False),
+                    'witness_present': claim_data.get('witness_present', False),
+                    'witness_first_name': claim_data.get('witness_first_name'),
+                    'witness_last_name': claim_data.get('witness_last_name'),
+                    'police_report_filed': claim_data.get('police_report_filed', False),
+                    'claim_status': claim_data.get('claim_status', 'Submitted')
+                }
+                
+                cur.execute(query, prepared_data)
+                result = cur.fetchone()
+                return result[0] if result else None
+                
+    except Exception as e:
+        print(f"❌ Error inserting claim: {e}")
+        raise e
+
+
+def get_all_claims():
+    """Retrieve all claims with basic info"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = """
+                    SELECT 
+                        c.claim_id,
+                        c.policy_id,
+                        c.claim_type,
+                        c.date_of_loss,
+                        c.claim_description,
+                        c.claim_status,
+                        c.claim_submitted_at,
+                        COALESCE(c.reporting_first_name || ' ' || c.reporting_last_name, '') as reporting_name,
+                        COALESCE(c.insured_first_name || ' ' || c.insured_last_name, '') as insured_name,
+                        p.sum_insured,
+                        p.policy_type
+                    FROM claims_db c
+                    LEFT JOIN policy_db p ON c.policy_id = p.policy_id
+                    ORDER BY c.claim_submitted_at DESC
+                """
+                
+                cur.execute(query)
+                claims = cur.fetchall()
+                
+                # Convert to list of dicts and handle dates
+                result = []
+                for claim in claims:
+                    claim_dict = dict(claim)
+                    if claim_dict.get('date_of_loss'):
+                        claim_dict['date_of_loss'] = claim_dict['date_of_loss'].strftime('%Y-%m-%d')
+                    if claim_dict.get('claim_submitted_at'):
+                        claim_dict['claim_submitted_at'] = claim_dict['claim_submitted_at'].strftime('%Y-%m-%d %H:%M:%S')
+                    result.append(claim_dict)
+                
+                return result
+                
+    except Exception as e:
+        print(f"❌ Error fetching claims: {e}")
+        raise e
+
+
+def get_claim_by_id(claim_id):
+    """Retrieve detailed claim information by claim_id"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = """
+                    SELECT * FROM claims_db
+                    WHERE claim_id = %s
+                """
+                
+                cur.execute(query, (claim_id,))
+                claim = cur.fetchone()
+                
+                if claim:
+                    claim_dict = dict(claim)
+                    # Convert date objects to strings
+                    for key, value in claim_dict.items():
+                        if isinstance(value, datetime):
+                            claim_dict[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                        elif hasattr(value, 'strftime'):  # date object
+                            claim_dict[key] = value.strftime('%Y-%m-%d')
+                    return claim_dict
+                return None
+                
+    except Exception as e:
+        print(f"❌ Error fetching claim: {e}")
+        raise e
+
+
+# ============================================================================
+# DATABASE OPERATIONS - POLICIES
+# ============================================================================
+
+def get_policy_by_id(policy_id):
+    """Retrieve policy information by policy_id"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = """
+                    SELECT * FROM policy_db
+                    WHERE policy_id = %s
+                """
+                
+                cur.execute(query, (policy_id,))
+                policy = cur.fetchone()
+                
+                if policy:
+                    policy_dict = dict(policy)
+                    # Convert date objects to strings
+                    for key, value in policy_dict.items():
+                        if isinstance(value, datetime):
+                            policy_dict[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                        elif hasattr(value, 'strftime'):  # date object
+                            policy_dict[key] = value.strftime('%Y-%m-%d')
+                    return policy_dict
+                return None
+                
+    except Exception as e:
+        print(f"❌ Error fetching policy: {e}")
+        raise e
 
 
 # Error handlers to ensure all responses are JSON
@@ -134,8 +373,10 @@ def handle_exception(error):
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    db_status = test_db_connection()
     return jsonify({
-        'status': 'healthy',
+        'status': 'healthy' if db_status else 'degraded',
+        'database': 'connected' if db_status else 'disconnected',
         'service': 'claims-fraud-api',
         'timestamp': datetime.now().isoformat(),
         'active_sessions': len(sessions)
@@ -592,6 +833,45 @@ def process_claim():
         print(f"\n✓ Processing complete for {os.path.basename(session.pdf_path)}")
         print(f"{'='*70}\n")
         
+        # Save claim to database
+        print(f"\n[DB] 💾 Saving claim to database...")
+        claim_db_data = {
+            'claim_id': session.claim_data.get('claim_id', ''),
+            'policy_id': policy_number or session.email_fields.get('policy_number', ''),
+            'claim_type': session.claim_data.get('claim_type', ''),
+            'date_of_loss': session.claim_data.get('date_of_loss'),
+            'claim_description': results.get('fraud_detection', {}).get('summary', ''),
+            'reporting_first_name': session.claim_data.get('first_name', ''),
+            'reporting_last_name': session.claim_data.get('last_name', ''),
+            'reporting_address': session.claim_data.get('address', ''),
+            'reporting_city': session.claim_data.get('city', ''),
+            'reporting_state': session.claim_data.get('state', ''),
+            'reporting_zip': session.claim_data.get('zip_code', ''),
+            'reporting_email': session.claim_data.get('email', ''),
+            'reporting_phone': session.claim_data.get('phone_number', ''),
+            'insured_same_as_reporter': session.claim_data.get('insured_same_as_reporter', False),
+            'insured_first_name': session.claim_data.get('insured_first_name', ''),
+            'insured_last_name': session.claim_data.get('insured_last_name', ''),
+            'insured_address': session.claim_data.get('insured_address', ''),
+            'insured_city': session.claim_data.get('insured_city', ''),
+            'insured_state': session.claim_data.get('insured_state', ''),
+            'insured_zip': session.claim_data.get('insured_zip', ''),
+            'insured_email': session.claim_data.get('insured_email', ''),
+            'insured_phone': session.claim_data.get('insured_phone', ''),
+            'injuries_reported': session.claim_data.get('injuries', False),
+            'witness_present': session.claim_data.get('witness_present', False),
+            'witness_first_name': session.claim_data.get('witness_first_name', ''),
+            'witness_last_name': session.claim_data.get('witness_last_name', ''),
+            'police_report_filed': session.claim_data.get('police_notified', False),
+            'claim_status': 'Submitted'
+        }
+        
+        try:
+            db_claim_id = insert_claim(claim_db_data)
+            print(f"[DB] ✅ Claim saved to database: {db_claim_id}")
+        except Exception as db_error:
+            print(f"[DB] ⚠ Database save failed: {db_error}")
+
         return jsonify({
             'success': True,
             'session_id': session_id,
@@ -728,23 +1008,123 @@ def delete_session(session_id: str):
     """Delete a specific session"""
     if session_id in sessions:
         sessions.pop(session_id)
-        return jsonify({'success': True, 'message': 'Session deleted'})
-    return jsonify({'error': 'Session not found'}), 404
+        return jsonify({'success': True, 'message': f'Session {session_id} deleted'}), 200
+    return jsonify({'success': False, 'message': 'Session not found'}), 404
+
+
+# ============================================================================
+# API ENDPOINTS - DATABASE QUERIES
+# ============================================================================
+
+@app.route('/api/claims', methods=['GET'])
+def api_get_claims():
+    """API endpoint to get all claims"""
+    try:
+        claims = get_all_claims()
+        return jsonify({
+            'success': True,
+            'claims': claims,
+            'count': len(claims)
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/claims/<claim_id>', methods=['GET'])
+def api_get_claim_detail(claim_id):
+    """API endpoint to get claim details with policy info"""
+    try:
+        claim = get_claim_by_id(claim_id)
+        
+        if not claim:
+            return jsonify({
+                'success': False,
+                'error': 'Claim not found'
+            }), 404
+        
+        # Get associated policy
+        policy = None
+        if claim.get('policy_id'):
+            policy = get_policy_by_id(claim['policy_id'])
+        
+        return jsonify({
+            'success': True,
+            'claim': claim,
+            'policy': policy
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/policies/<policy_id>', methods=['GET'])
+def api_get_policy(policy_id):
+    """API endpoint to get policy by ID"""
+    try:
+        policy = get_policy_by_id(policy_id)
+        
+        if not policy:
+            return jsonify({
+                'success': False,
+                'error': 'Policy not found'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'policy': policy
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+# ============================================================================
+# SERVE HTML PAGES
+# ============================================================================
+
+@app.route('/claims')
+def serve_claims_page():
+    """Serve claims management page"""
+    return send_from_directory('.', 'claims_mgmt.html')
+
+
+@app.route('/claim/<claim_id>')
+def serve_claim_detail_page(claim_id):
+    """Serve claim detail page"""
+    return send_from_directory('.', 'claim_detail.html')
 
 
 if __name__ == "__main__":
+    # Test database connection on startup
+    print("\n" + "="*70)
+    print("TESTING DATABASE CONNECTION")
+    print("="*70)
+    if test_db_connection():
+        print("✅ Database connection successful")
+    else:
+        print("❌ Database connection failed - check your .env configuration")
+    print("="*70 + "\n")
+    
     port = int(os.getenv("API_PORT", 5000))
-    print(f"\n{'='*70}")
+    print(f"{'='*70}")
     print(f"CLAIMS FRAUD API SERVER")
     print(f"{'='*70}")
     print(f"Starting on port {port}...")
     print(f"Endpoints:")
-    print(f"  GET  /health                    - Health check")
-    print(f"  GET  /claims-api/pending        - List pending files")
-    print(f"  GET  /claims-api/pending/latest - Get latest pending file")
-    print(f"  POST /claims-api/email-fields   - Confirm email fields")
+    print(f"  GET  /health                   - Health check")
+    print(f"  GET  /claims-api/pending       - List pending files")
+    print(f"  POST /claims-api/email-fields  - Confirm fields")
     print(f"  POST /claims-api/process        - Process claim")
     print(f"  GET  /claims-api/output-pdf     - Get output PDF URL")
+    print(f"  GET  /api/claims               - Get all claims from DB")
+    print(f"  GET  /claims                   - Serve claims page")
     print(f"{'='*70}\n")
     
     app.run(host='0.0.0.0', port=port, debug=False)
