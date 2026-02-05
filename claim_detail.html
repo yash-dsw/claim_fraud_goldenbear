@@ -367,6 +367,21 @@
                             <p>${claim.claim_description}</p>
                         </div>
                     ` : ''}
+
+                    ${claim.folder_url ? `
+                        <div class="description-box" style="background: #e6f3ff; border-left-color: #0066cc; margin-top: 15px;">
+                            <h4>📁 Claims Folder</h4>
+                            <p style="margin-bottom: 10px;">View all documents related to this claim in OneDrive:</p>
+                            <a href="${claim.folder_url}" target="_blank" 
+                               style="display: inline-block; background: #0066cc; color: white; 
+                                      padding: 10px 20px; border-radius: 6px; text-decoration: none; 
+                                      font-weight: 600; transition: all 0.3s;"
+                               onmouseover="this.style.background='#0052a3'"
+                               onmouseout="this.style.background='#0066cc'">
+                                🔗 Open Claims Folder
+                            </a>
+                        </div>
+                    ` : ''}
                 </div>
 
                 <!-- Reporting Party Card -->

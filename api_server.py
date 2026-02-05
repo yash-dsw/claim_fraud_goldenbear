@@ -210,7 +210,7 @@ def insert_claim(claim_data):
                         insured_address, insured_city, insured_state,
                         insured_zip, insured_email, insured_phone,
                         injuries_reported, witness_present, witness_first_name,
-                        witness_last_name, police_report_filed, claim_status
+                        witness_last_name, police_report_filed, claim_status, folder_url
                     ) VALUES (
                         %(claim_id)s, %(policy_id)s, %(claim_type)s, %(date_of_loss)s,
                         %(claim_description)s, %(reporting_first_name)s, %(reporting_last_name)s,
@@ -220,7 +220,7 @@ def insert_claim(claim_data):
                         %(insured_address)s, %(insured_city)s, %(insured_state)s,
                         %(insured_zip)s, %(insured_email)s, %(insured_phone)s,
                         %(injuries_reported)s, %(witness_present)s, %(witness_first_name)s,
-                        %(witness_last_name)s, %(police_report_filed)s, %(claim_status)s
+                        %(witness_last_name)s, %(police_report_filed)s, %(claim_status)s, %(folder_url)s
                     )
                     RETURNING claim_id
                 """
@@ -254,7 +254,8 @@ def insert_claim(claim_data):
                     'witness_first_name': claim_data.get('witness_first_name'),
                     'witness_last_name': claim_data.get('witness_last_name'),
                     'police_report_filed': claim_data.get('police_report_filed', False),
-                    'claim_status': claim_data.get('claim_status', 'Submitted')
+                    'claim_status': claim_data.get('claim_status', 'Submitted'),
+                    'folder_url': claim_data.get('folder_url', None)
                 }
                 
                 cur.execute(query, prepared_data)
@@ -911,7 +912,8 @@ def process_claim():
             'witness_first_name': session.claim_data.get('witness_first_name', ''),
             'witness_last_name': session.claim_data.get('witness_last_name', ''),
             'police_report_filed': session.claim_data.get('police_notified', False),
-            'claim_status': 'Submitted'
+            'claim_status': 'Submitted',
+            'folder_url': session.claims_folder_url if session.claims_folder_url else None
         }
         
         try:
