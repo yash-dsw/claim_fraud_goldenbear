@@ -110,6 +110,7 @@ class SessionData:
         self.onedrive_pdf_id = None
         self.onedrive_json_id = None
         self.claims_folder_path = None
+        self.claims_folder_url = None  # OneDrive URL for claims folder
     
     def is_expired(self) -> bool:
         """Check if session has expired"""
@@ -763,6 +764,12 @@ def process_claim():
                             folder_url = folder_info['web_url']
                             session.output_pdf_url = f"{folder_url}/{pdf_filename}"
                             print(f"[OUTPUT] ✓ Constructed file URL: {session.output_pdf_url}")
+                    
+                    # Store the folder URL for later use
+                    folder_info = fraud_system.onedrive_client.get_subfolder_info(claims_folder_path)
+                    if folder_info and folder_info.get('web_url'):
+                        session.claims_folder_url = folder_info['web_url']
+                        print(f"[OUTPUT] ✓ Folder URL stored: {session.claims_folder_url}")
                 except Exception as e:
                     print(f"[OUTPUT] ⚠ Error getting file URL: {e}")
                     import traceback
@@ -926,8 +933,18 @@ def get_output_pdf():
                 'processing_complete': False
             }), 404
         
-        # Only return if OneDrive URL is available
-        if session.output_pdf_url:
+        # Return folder URL instead of PDF URL (opens subfolder in new tab)
+        if session.claims_folder_url:
+            return jsonify({
+                'success': True,
+                'pdf_url': session.claims_folder_url,  # Send folder URL instead of file URL
+                'filename': os.path.basename(session.output_pdf_path) if session.output_pdf_path else None,
+                'session_id': session_id,
+                'created_at': session.created_at.isoformat(),
+                'claims_folder': session.claims_folder_path
+            }), 200
+        elif session.output_pdf_url:
+            # Fallback to PDF URL if folder URL not available
             return jsonify({
                 'success': True,
                 'pdf_url': session.output_pdf_url,
@@ -947,7 +964,17 @@ def get_output_pdf():
     if filename:
         for sid, session in sessions.items():
             if session.pdf_path and os.path.basename(session.pdf_path) == filename:
-                if session.output_pdf_url:
+                # Return folder URL instead of PDF URL
+                if session.claims_folder_url:
+                    return jsonify({
+                        'success': True,
+                        'pdf_url': session.claims_folder_url,  # Send folder URL
+                        'filename': os.path.basename(session.output_pdf_path) if session.output_pdf_path else None,
+                        'session_id': sid,
+                        'created_at': session.created_at.isoformat(),
+                        'claims_folder': session.claims_folder_path
+                    }), 200
+                elif session.output_pdf_url:
                     return jsonify({
                         'success': True,
                         'pdf_url': session.output_pdf_url,
@@ -972,7 +999,7 @@ def get_output_pdf():
     latest_time = None
     
     for sid, session in sessions.items():
-        if session.output_pdf_url:
+        if session.claims_folder_url or session.output_pdf_url:
             if latest_time is None or session.created_at > latest_time:
                 latest_session = session
                 latest_time = session.created_at
@@ -983,9 +1010,12 @@ def get_output_pdf():
             'message': 'No output PDF uploaded in any active session'
         }), 404
     
+    # Return folder URL instead of PDF URL
+    pdf_url = latest_session.claims_folder_url if latest_session.claims_folder_url else latest_session.output_pdf_url
+    
     return jsonify({
         'success': True,
-        'pdf_url': latest_session.output_pdf_url,
+        'pdf_url': pdf_url,  # Send folder URL if available
         'filename': os.path.basename(latest_session.output_pdf_path) if latest_session.output_pdf_path else None,
         'session_id': latest_session.session_id,
         'created_at': latest_session.created_at.isoformat(),
