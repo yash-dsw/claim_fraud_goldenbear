@@ -223,7 +223,7 @@ def extract_acord_fields(pdf_path):
 def extract_claim_fields(pdf_path):
     """
     Extract fields from a Claim Form PDF.
-    Returns a dictionary with claim information.
+    Returns a dictionary with claim information including detailed reporter and insured information.
     """
     import re
     
@@ -248,6 +248,31 @@ def extract_claim_fields(pdf_path):
         "reporting_party_name": "",
         "reporting_party_email": "",
         "reporting_party_phone": "",
+        # Reporter detailed fields
+        "first_name": "",
+        "last_name": "",
+        "address": "",
+        "city": "",
+        "state": "",
+        "zip_code": "",
+        "email": "",
+        "phone_number": "",
+        # Insured party fields
+        "insured_same_as_reporter": False,
+        "insured_first_name": "",
+        "insured_last_name": "",
+        "insured_address": "",
+        "insured_city": "",
+        "insured_state": "",
+        "insured_zip": "",
+        "insured_email": "",
+        "insured_phone": "",
+        # Witness fields
+        "witness_present": False,
+        "witness_first_name": "",
+        "witness_last_name": "",
+        # Police report
+        "police_notified": False,
         "full_text": ""
     }
     
@@ -301,29 +326,143 @@ def extract_claim_fields(pdf_path):
         if type_match:
             claim_data["claim_type"] = type_match.group(1).strip()
     
-    # Loss Description
+    # Loss Description - extract the complete description text, can span multiple lines
     if not claim_data["loss_description"]:
-        desc_match = re.search(r'Describe\s+the\s+type\s+or\s+nature\s+of\s+claim:\s*\*?\s*([^\n]+(?:\n[^\n]+)*?)(?:Injuries?|Witness?|\n\n)', full_text, re.IGNORECASE)
+        # Try to find the description between the label and 'Injuries?' - supports multi-line text
+        desc_match = re.search(r'Describe\s+the\s+type\s+or\s+nature\s+of\s+claim:\s*\*?\s*(.+?)\s*Injuries?\s*\?', full_text, re.IGNORECASE | re.DOTALL)
         if desc_match:
             claim_data["loss_description"] = desc_match.group(1).strip()
+        else:
+            # Fallback: try to get text until double newline or next section
+            desc_match = re.search(r'Describe\s+the\s+type\s+or\s+nature\s+of\s+claim:\s*\*?\s*(.+?)(?:\n\n|Injuries|Witness|Police)', full_text, re.IGNORECASE | re.DOTALL)
+            if desc_match:
+                claim_data["loss_description"] = desc_match.group(1).strip()
     
     # Insured Name (from First/Last Name)
     first_name_match = re.search(r'(?:Insured:|Reporting Party:).*?First\s+Name:\s*\*?\s*([^\n]+)', full_text, re.IGNORECASE | re.DOTALL)
     last_name_match = re.search(r'(?:Insured:|Reporting Party:).*?Last\s+Name:\s*\*?\s*([^\n]+)', full_text, re.IGNORECASE | re.DOTALL)
     
     if first_name_match and last_name_match:
-        claim_data["insured_name"] = f"{first_name_match.group(1).strip()} {last_name_match.group(1).strip()}"
+        claim_data["first_name"] = first_name_match.group(1).strip()
+        claim_data["last_name"] = last_name_match.group(1).strip()
+        claim_data["insured_name"] = f"{claim_data['first_name']} {claim_data['last_name']}"
         claim_data["reporting_party_name"] = claim_data["insured_name"]
+    
+    # Extract detailed reporter information
+    address_match = re.search(r'Address:\s*\*?\s*([^\n]+)', full_text, re.IGNORECASE)
+    if address_match:
+        claim_data["address"] = address_match.group(1).strip()
+    
+    city_match = re.search(r'City:\s*\*?\s*([^\n]+)', full_text, re.IGNORECASE)
+    if city_match:
+        claim_data["city"] = city_match.group(1).strip()
+    
+    state_match = re.search(r'State:\s*\*?\s*([^\n]+)', full_text, re.IGNORECASE)
+    if state_match:
+        claim_data["state"] = state_match.group(1).strip()
+    
+    zip_match = re.search(r'(?:Zip|Postal\s+Code):\s*\*?\s*([0-9\-]+)', full_text, re.IGNORECASE)
+    if zip_match:
+        claim_data["zip_code"] = zip_match.group(1).strip()
     
     # Email
     email_match = re.search(r'Email:\s*\*?\s*([^\s\n]+@[^\s\n]+)', full_text, re.IGNORECASE)
     if email_match:
-        claim_data["reporting_party_email"] = email_match.group(1).strip()
+        claim_data["email"] = email_match.group(1).strip()
+        claim_data["reporting_party_email"] = claim_data["email"]
     
     # Phone
-    phone_match = re.search(r'Phone:\s*\*?\s*(\([0-9]+\)\s*[0-9\-]+)', full_text, re.IGNORECASE)
+    phone_match = re.search(r'Phone:\s*\*?\s*(\([0-9]+\)\s*[0-9\-]+|[0-9\-]+)', full_text, re.IGNORECASE)
     if phone_match:
-        claim_data["reporting_party_phone"] = phone_match.group(1).strip()
+        claim_data["phone_number"] = phone_match.group(1).strip()
+        claim_data["reporting_party_phone"] = claim_data["phone_number"]
+    
+    # Check if insured is same as reporter
+    same_as_reporter_match = re.search(r'Is\s+the\s+Insured\s+the\s+same\s+as\s+the\s+Reporting\s+Party\?\s*\*?\s*(Yes|No)', full_text, re.IGNORECASE)
+    if same_as_reporter_match:
+        claim_data["insured_same_as_reporter"] = same_as_reporter_match.group(1).strip().lower() == 'yes'
+    
+    # Extract insured party information if different from reporter
+    insured_info_found = False
+    if not claim_data["insured_same_as_reporter"]:
+        # Look for insured section
+        insured_section = re.search(r'Insured\s+Party\s+Information.*?(?:Witness|Police|Incident|$)', full_text, re.IGNORECASE | re.DOTALL)
+        if insured_section:
+            insured_text = insured_section.group(0)
+            
+            insured_first_match = re.search(r'First\s+Name:\s*\*?\s*([^\n]+)', insured_text, re.IGNORECASE)
+            if insured_first_match:
+                claim_data["insured_first_name"] = insured_first_match.group(1).strip()
+                insured_info_found = True
+            
+            insured_last_match = re.search(r'Last\s+Name:\s*\*?\s*([^\n]+)', insured_text, re.IGNORECASE)
+            if insured_last_match:
+                claim_data["insured_last_name"] = insured_last_match.group(1).strip()
+                insured_info_found = True
+            
+            insured_address_match = re.search(r'Address:\s*\*?\s*([^\n]+)', insured_text, re.IGNORECASE)
+            if insured_address_match:
+                claim_data["insured_address"] = insured_address_match.group(1).strip()
+                insured_info_found = True
+            
+            insured_city_match = re.search(r'City:\s*\*?\s*([^\n]+)', insured_text, re.IGNORECASE)
+            if insured_city_match:
+                claim_data["insured_city"] = insured_city_match.group(1).strip()
+                insured_info_found = True
+            
+            insured_state_match = re.search(r'State:\s*\*?\s*([^\n]+)', insured_text, re.IGNORECASE)
+            if insured_state_match:
+                claim_data["insured_state"] = insured_state_match.group(1).strip()
+                insured_info_found = True
+            
+            insured_zip_match = re.search(r'(?:Zip|Postal\s+Code):\s*\*?\s*([0-9\-]+)', insured_text, re.IGNORECASE)
+            if insured_zip_match:
+                claim_data["insured_zip"] = insured_zip_match.group(1).strip()
+                insured_info_found = True
+            
+            insured_email_match = re.search(r'Email:\s*\*?\s*([^\s\n]+@[^\s\n]+)', insured_text, re.IGNORECASE)
+            if insured_email_match:
+                claim_data["insured_email"] = insured_email_match.group(1).strip()
+                insured_info_found = True
+            
+            insured_phone_match = re.search(r'Phone:\s*\*?\s*(\([0-9]+\)\s*[0-9\-]+|[0-9\-]+)', insured_text, re.IGNORECASE)
+            if insured_phone_match:
+                claim_data["insured_phone"] = insured_phone_match.group(1).strip()
+                insured_info_found = True
+    
+    # If insured is same as reporter OR no separate insured info found, copy reporter information
+    if claim_data["insured_same_as_reporter"] or not insured_info_found:
+        claim_data["insured_first_name"] = claim_data["first_name"]
+        claim_data["insured_last_name"] = claim_data["last_name"]
+        claim_data["insured_address"] = claim_data["address"]
+        claim_data["insured_city"] = claim_data["city"]
+        claim_data["insured_state"] = claim_data["state"]
+        claim_data["insured_zip"] = claim_data["zip_code"]
+        claim_data["insured_email"] = claim_data["email"]
+        claim_data["insured_phone"] = claim_data["phone_number"]
+        # If we're copying, mark it as same
+        if not insured_info_found:
+            claim_data["insured_same_as_reporter"] = True
+    
+    # Witness information
+    witness_match = re.search(r'(?:Was\s+there\s+a\s+)?Witness\?\s*\*?\s*(Yes|No)', full_text, re.IGNORECASE)
+    if witness_match:
+        claim_data["witness_present"] = witness_match.group(1).strip().lower() == 'yes'
+        claim_data["witnesses"] = witness_match.group(1).strip()
+    
+    if claim_data["witness_present"]:
+        witness_first_match = re.search(r'Witness.*?First\s+Name:\s*\*?\s*([^\n]+)', full_text, re.IGNORECASE | re.DOTALL)
+        if witness_first_match:
+            claim_data["witness_first_name"] = witness_first_match.group(1).strip()
+        
+        witness_last_match = re.search(r'Witness.*?Last\s+Name:\s*\*?\s*([^\n]+)', full_text, re.IGNORECASE | re.DOTALL)
+        if witness_last_match:
+            claim_data["witness_last_name"] = witness_last_match.group(1).strip()
+    
+    # Police notification
+    police_match = re.search(r'(?:Was\s+)?Police\s+(?:Notified|Report\s+Filed)\?\s*\*?\s*(Yes|No)', full_text, re.IGNORECASE)
+    if police_match:
+        claim_data["police_notified"] = police_match.group(1).strip().lower() == 'yes'
     
     # Injuries
     injuries_match = re.search(r'Injuries\?\s*\*?\s*(Yes|No)', full_text, re.IGNORECASE)

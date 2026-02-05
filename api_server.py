@@ -143,6 +143,37 @@ def cleanup_expired_sessions():
 # DATABASE OPERATIONS - CLAIMS
 # ============================================================================
 
+def generate_unique_claim_id():
+    """
+    Generate a unique 7-digit random claim ID.
+    Checks database to ensure no collision.
+    
+    Returns:
+        String of 7-digit claim ID
+    """
+    import random
+    max_attempts = 100
+    
+    for _ in range(max_attempts):
+        # Generate 7-digit random number
+        claim_id = str(random.randint(1000000, 9999999))
+        
+        # Check if it exists in database
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM claims_db WHERE claim_id = %s", (claim_id,))
+                    if not cur.fetchone():
+                        return claim_id
+        except Exception as e:
+            print(f"[DB] Warning: Could not check claim_id uniqueness: {e}")
+            return claim_id  # Return anyway if DB check fails
+    
+    # Fallback: use timestamp-based ID if all random attempts failed
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d%H%M%S")[:7]
+
+
 def insert_claim(claim_data):
     """
     Insert a new claim into claims_db
@@ -154,8 +185,21 @@ def insert_claim(claim_data):
         claim_id if successful, None otherwise
     """
     try:
+        # If no claim_id provided or it's empty, generate a new one
+        if not claim_data.get('claim_id') or claim_data.get('claim_id').strip() == '':
+            claim_data['claim_id'] = generate_unique_claim_id()
+            print(f"[DB] Generated new claim_id: {claim_data['claim_id']}")
+        
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # First check if claim_id exists
+                cur.execute("SELECT 1 FROM claims_db WHERE claim_id = %s", (claim_data.get('claim_id'),))
+                if cur.fetchone():
+                    # Claim ID exists, generate a new one
+                    print(f"[DB] Claim ID {claim_data['claim_id']} already exists, generating new ID...")
+                    claim_data['claim_id'] = generate_unique_claim_id()
+                    print(f"[DB] New claim_id: {claim_data['claim_id']}")
+                
                 query = """
                     INSERT INTO claims_db (
                         claim_id, policy_id, claim_type, date_of_loss,
@@ -178,19 +222,16 @@ def insert_claim(claim_data):
                         %(injuries_reported)s, %(witness_present)s, %(witness_first_name)s,
                         %(witness_last_name)s, %(police_report_filed)s, %(claim_status)s
                     )
-                    ON CONFLICT (claim_id) DO UPDATE SET
-                        claim_status = EXCLUDED.claim_status,
-                        claim_description = EXCLUDED.claim_description
                     RETURNING claim_id
                 """
                 
-                # Prepare data with defaults
+                # Prepare data with defaults - ensure claim_description is included
                 prepared_data = {
                     'claim_id': claim_data.get('claim_id'),
                     'policy_id': claim_data.get('policy_id'),
                     'claim_type': claim_data.get('claim_type'),
                     'date_of_loss': claim_data.get('date_of_loss'),
-                    'claim_description': claim_data.get('claim_description'),
+                    'claim_description': claim_data.get('claim_description', ''),  # Ensure it's not None
                     'reporting_first_name': claim_data.get('reporting_first_name'),
                     'reporting_last_name': claim_data.get('reporting_last_name'),
                     'reporting_address': claim_data.get('reporting_address'),
@@ -843,11 +884,11 @@ def process_claim():
         # Save claim to database
         print(f"\n[DB] 💾 Saving claim to database...")
         claim_db_data = {
-            'claim_id': session.claim_data.get('claim_id', ''),
+            'claim_id': session.claim_data.get('claim_number', ''),  # Use claim_number instead of claim_id
             'policy_id': policy_number or session.email_fields.get('policy_number', ''),
             'claim_type': session.claim_data.get('claim_type', ''),
             'date_of_loss': session.claim_data.get('date_of_loss'),
-            'claim_description': results.get('fraud_detection', {}).get('summary', ''),
+            'claim_description': session.claim_data.get('loss_description', ''),  # Use actual loss description from PDF
             'reporting_first_name': session.claim_data.get('first_name', ''),
             'reporting_last_name': session.claim_data.get('last_name', ''),
             'reporting_address': session.claim_data.get('address', ''),
@@ -865,7 +906,7 @@ def process_claim():
             'insured_zip': session.claim_data.get('insured_zip', ''),
             'insured_email': session.claim_data.get('insured_email', ''),
             'insured_phone': session.claim_data.get('insured_phone', ''),
-            'injuries_reported': session.claim_data.get('injuries', False),
+            'injuries_reported': session.claim_data.get('injuries', '').lower() == 'yes' if session.claim_data.get('injuries') else False,
             'witness_present': session.claim_data.get('witness_present', False),
             'witness_first_name': session.claim_data.get('witness_first_name', ''),
             'witness_last_name': session.claim_data.get('witness_last_name', ''),

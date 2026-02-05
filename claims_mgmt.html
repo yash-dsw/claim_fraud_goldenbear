@@ -357,12 +357,12 @@
                     <input type="text" id="searchInput" placeholder="Search claims...">
                     <span class="search-icon">🔍</span>
                 </div>
-                <button class="btn btn-secondary" onclick="downloadClaims()">
+                <!-- <button class="btn btn-secondary" onclick="downloadClaims()">
                     Download
                 </button>
                 <button class="btn btn-primary" onclick="refreshClaims()">
                     Refresh
-                </button>
+                </button> -->
             </div>
         </div>
 
@@ -378,12 +378,12 @@
                         <th>STATUS</th>
                         <th>DESCRIPTION</th>
                         <th>POLICY ID</th>
-                        <th style="text-align: center;">ACTIONS</th>
+                        <!-- <th style="text-align: center;">ACTIONS</th> -->
                     </tr>
                 </thead>
                 <tbody id="claimsTableBody">
                     <tr>
-                        <td colspan="9" style="text-align: center; padding: 40px;">
+                        <td colspan="8" style="text-align: center; padding: 40px;">
                             Loading claims...
                         </td>
                     </tr>
@@ -403,7 +403,7 @@
             const loadingOverlay = document.getElementById('loadingOverlay');
 
             loadingOverlay.style.display = 'flex';
-            tableBody.innerHTML = '<tr><td colspan="9" style="text-align: center;">Loading claims...</td></tr>';
+            tableBody.innerHTML = '<tr><td colspan="8" style="text-align: center;">Loading claims...</td></tr>';
 
             try {
                 const response = await fetch(`${API_BASE_URL}/api/claims`);
@@ -415,7 +415,7 @@
                     tableBody.innerHTML = '';
 
                     if (data.claims.length === 0) {
-                        tableBody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #718096;">No claims found in database.</td></tr>';
+                        tableBody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #718096;">No claims found in database.</td></tr>';
                         return;
                     }
 
@@ -430,7 +430,7 @@
                             <td><span class="status-badge ${getStatusClass(claim.claim_status)}">${claim.claim_status || 'Pending'}</span></td>
                             <td>${truncateText(claim.claim_description, 50) || '—'}</td>
                             <td>${claim.policy_id || '—'}</td>
-                            <td>
+                            <!-- <td>
                                 <div class="action-icons">
                                     <button class="icon-btn view" 
                                         onclick="window.location.href='/claim/${claim.claim_id}'"
@@ -438,17 +438,17 @@
                                     <button class="icon-btn edit" title="Edit" onclick="editClaim('${claim.claim_id}')">✏️</button>
                                     <button class="icon-btn delete" title="Delete" onclick="deleteClaim('${claim.claim_id}')">🗑️</button>
                                 </div>
-                            </td>
+                            </td> -->
                         `;
                         tableBody.appendChild(row);
                     });
                 } else {
-                    tableBody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: red; padding: 40px;">Error: ${data.error}</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: red; padding: 40px;">Error: ${data.error}</td></tr>`;
                 }
             } catch (error) {
                 loadingOverlay.style.display = 'none';
                 console.error('Error fetching claims:', error);
-                tableBody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: red; padding: 40px;">Failed to load claims. Make sure the server is running.</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: red; padding: 40px;">Failed to load claims. Make sure the server is running.</td></tr>';
             }
         }
 
