@@ -51,14 +51,14 @@ def watch_mode_api():
     print(f"[WATCHER] Monitoring OneDrive: {user_email}/{folder_name}")
     print(f"[WATCHER] Downloaded files saved to: {os.path.abspath(input_folder)}")
     
-    # Track processed files to avoid duplicates
-    processed_files = set()
+    # Track processed files to avoid duplicates - use file ID from OneDrive
+    processed_file_ids = set()
     
     # Initial scan - mark existing files as processed
     if os.path.exists(input_folder):
         for filename in os.listdir(input_folder):
             if filename.lower().endswith('.pdf') or filename.lower().endswith('.pdf.json'):
-                processed_files.add(filename)
+                processed_file_ids.add(filename)  # Use filename as fallback for initial scan
     
     is_interactive = sys.stdout.isatty()
     
@@ -82,7 +82,7 @@ def watch_mode_api():
                             os.remove(file_path)
                     except Exception as e:
                         print(f"[WATCHER]   ✗ Could not delete {filename}: {e}")
-                processed_files.clear()
+                processed_file_ids.clear()
                 sessions.clear()
                 
                 # Delete reset file from OneDrive
@@ -119,15 +119,30 @@ def watch_mode_api():
             pdf_json_pairs = []
             for pdf_file in new_pdf_files:
                 pdf_name = pdf_file['name']
+                pdf_id = pdf_file['id']
                 json_name = pdf_name + ".json"
                 
-                # Skip if already has a session
-                session_exists = any(
-                    s.pdf_path and os.path.basename(s.pdf_path) == pdf_name 
+                # Skip if this PDF file ID was already processed
+                if pdf_id in processed_file_ids:
+                    continue
+                
+                # Skip if already has an ACTIVE (not completed) session
+                # Allow re-processing if previous session is complete
+                active_session_exists = any(
+                    s.pdf_path and os.path.basename(s.pdf_path) == pdf_name and not s.processing_complete
                     for s in sessions.values()
                 )
-                if session_exists:
+                if active_session_exists:
                     continue
+                
+                # Clean up old completed sessions for this file
+                completed_sessions = [
+                    sid for sid, s in sessions.items()
+                    if s.pdf_path and os.path.basename(s.pdf_path) == pdf_name and s.processing_complete
+                ]
+                for sid in completed_sessions:
+                    print(f"[WATCHER] 🧹 Cleaning up completed session for {pdf_name}: {sid[:8]}...")
+                    sessions.pop(sid, None)
                 
                 # Check for companion JSON
                 json_file = next((f for f in new_json_files if f['name'] == json_name), None)
@@ -141,7 +156,9 @@ def watch_mode_api():
                     })
             
             # Status message
-            status_msg = f"[WATCHER] [{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(new_pdf_files)} PDFs, {len(pdf_json_pairs)} pairs ready, {len(sessions)} sessions"
+            active_sessions = sum(1 for s in sessions.values() if not s.processing_complete)
+            total_sessions = len(sessions)
+            status_msg = f"[WATCHER] [{datetime.now().strftime('%H:%M:%S')}] Check #{iteration}: {len(new_pdf_files)} PDFs, {len(pdf_json_pairs)} pairs ready, {active_sessions}/{total_sessions} active sessions"
             if is_interactive:
                 print(status_msg, end='\r')
             elif iteration == 1 or iteration % 60 == 0 or pdf_json_pairs:
@@ -222,6 +239,10 @@ def watch_mode_api():
                     session.onedrive_json_id = json_file_info['id']
                     
                     sessions[session_id] = session
+                    
+                    # Mark this PDF file ID as processed to prevent re-detection
+                    processed_file_ids.add(pdf_file_info['id'])
+                    print(f"[WATCHER] 📌 Marked file as processed: {pdf_file_info['id'][:20]}...")
                     
                     print(f"[WATCHER] ✓ Session created: {session_id[:8]}...")
                     print(f"[WATCHER] ⏳ Waiting for frontend to confirm via API")
