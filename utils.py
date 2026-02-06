@@ -517,3 +517,36 @@ def generate_unique_claim_id():
     import random
     claim_id = random.randint(1000000, 9999999)
     return str(claim_id)
+
+
+def clear_input_folder(input_folder="./input"):
+    """
+    Clear all files from the input folder.
+    
+    Args:
+        input_folder: Path to the input folder to clear (default: "./input")
+        
+    Returns:
+        int: Number of files deleted
+    """
+    import os
+    
+    if not os.path.exists(input_folder):
+        print(f"[CLEANUP] Input folder does not exist: {input_folder}")
+        return 0
+    
+    deleted_count = 0
+    print(f"\n[CLEANUP] 🧹 Clearing input folder: {input_folder}")
+    
+    for filename in os.listdir(input_folder):
+        file_path = os.path.join(input_folder, filename)
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                deleted_count += 1
+                print(f"[CLEANUP]    ✓ Deleted: {filename}")
+        except Exception as e:
+            print(f"[CLEANUP]    ✗ Could not delete {filename}: {e}")
+    
+    print(f"[CLEANUP] ✓ Cleared {deleted_count} file(s) from input folder\n")
+    return deleted_count

@@ -300,6 +300,14 @@ def main():
         print("\n\n" + "="*70)
         print("UNIFIED SERVER STOPPED")
         print("="*70)
+        
+        # Clear input folder on shutdown
+        from utils import clear_input_folder
+        input_folder = CONFIG['INPUT_FOLDER']
+        clear_input_folder(input_folder)
+        
+        print("Server shutdown complete.")
+        print("="*70)
 
 
 if __name__ == "__main__":

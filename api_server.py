@@ -174,6 +174,43 @@ def generate_unique_claim_id():
     return datetime.now().strftime("%Y%m%d%H%M%S")[:7]
 
 
+def convert_date_to_postgres(date_str):
+    """
+    Convert date string from various formats to PostgreSQL-compatible format (YYYY-MM-DD)
+    
+    Args:
+        date_str: Date string in formats like MM/DD/YYYY or M/D/YYYY
+    
+    Returns:
+        Date string in YYYY-MM-DD format, or original string if conversion fails
+    """
+    if not date_str:
+        return None
+    
+    # If already in YYYY-MM-DD format, return as-is
+    if isinstance(date_str, str) and len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
+        return date_str
+    
+    # List of date formats to try
+    date_formats = [
+        "%m/%d/%Y",  # 10/25/2025
+        "%m-%d-%Y",  # 10-25-2025
+        "%Y/%m/%d",  # 2025/10/25
+        "%Y-%m-%d",  # 2025-10-25
+    ]
+    
+    for fmt in date_formats:
+        try:
+            date_obj = datetime.strptime(date_str, fmt)
+            return date_obj.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    
+    # If no format matched, return as-is
+    print(f"⚠ Warning: Could not parse date '{date_str}', using as-is")
+    return date_str
+
+
 def insert_claim(claim_data):
     """
     Insert a new claim into claims_db
@@ -188,6 +225,10 @@ def insert_claim(claim_data):
         # If no claim_id provided or it's empty, generate a new one
         if not claim_data.get('claim_id') or claim_data.get('claim_id').strip() == '':
             claim_data['claim_id'] = generate_unique_claim_id()
+        
+        # Convert date_of_loss to PostgreSQL format
+        if claim_data.get('date_of_loss'):
+            claim_data['date_of_loss'] = convert_date_to_postgres(claim_data['date_of_loss'])
             print(f"[DB] Generated new claim_id: {claim_data['claim_id']}")
         
         with get_db_connection() as conn:
@@ -879,6 +920,10 @@ def process_claim():
         except Exception as e:
             print(f"   ⚠ Failed to clean up local files: {e}")
         
+        # Clear all remaining files in the input folder after successful processing
+        from utils import clear_input_folder
+        clear_input_folder(CONFIG['INPUT_FOLDER'])
+        
         print(f"\n✓ Processing complete for {os.path.basename(session.pdf_path)}")
         print(f"{'='*70}\n")
         
@@ -1172,6 +1217,12 @@ def serve_claims_page():
 def serve_claim_detail_page(claim_id):
     """Serve claim detail page"""
     return send_from_directory('.', 'claim_detail.html')
+
+
+@app.route('/logo-cropped.svg')
+def serve_logo():
+    """Serve logo file"""
+    return send_from_directory('.', 'logo-cropped.svg')
 
 
 if __name__ == "__main__":
