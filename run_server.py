@@ -25,6 +25,33 @@ from email_field_extractor import extract_email_fields
 from onedrive_client_app import OneDriveClientApp
 
 
+def clear_input_folder(input_folder="input"):
+    """Clear all files from the input folder"""
+    if not os.path.exists(input_folder):
+        print(f"[CLEANUP] Input folder does not exist: {input_folder}")
+        return
+    
+    cleared_count = 0
+    error_count = 0
+    
+    print(f"[CLEANUP] 🧹 Clearing input folder: {os.path.abspath(input_folder)}")
+    
+    for filename in os.listdir(input_folder):
+        file_path = os.path.join(input_folder, filename)
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                cleared_count += 1
+                print(f"[CLEANUP]   ✓ Deleted: {filename}")
+        except Exception as e:
+            error_count += 1
+            print(f"[CLEANUP]   ✗ Could not delete {filename}: {e}")
+    
+    print(f"[CLEANUP] ✓ Cleared {cleared_count} file(s)")
+    if error_count > 0:
+        print(f"[CLEANUP] ✗ Failed to delete {error_count} file(s)")
+
+
 def watch_mode_api():
     """
     OneDrive watcher that extracts fields and creates sessions.
@@ -217,12 +244,13 @@ def watch_mode_api():
                     email_fields = None
                     if email_metadata:
                         try:
-                            email_fields = extract_email_fields(email_metadata)
+                            # Pass PDF filename to extract_email_fields for document_name
+                            email_fields = extract_email_fields(email_metadata, pdf_filename=pdf_filename)
                             if email_fields:
                                 print(f"[WATCHER]    ✓ Email fields extracted")
-                                print(f"[WATCHER]       Sender: {email_fields.get('sender_name', 'N/A')}")
-                                print(f"[WATCHER]       Receiver: {email_fields.get('receiver_name', 'N/A')}")
                                 print(f"[WATCHER]       Policy: {email_fields.get('policy_number', 'N/A')}")
+                                print(f"[WATCHER]       Document: {email_fields.get('document_name', 'N/A')}")
+                                print(f"[WATCHER]       Subject: {email_fields.get('subject', 'N/A')[:50]}...")
                         except Exception as e:
                             print(f"[WATCHER]    ⚠ Email field extraction failed: {str(e)}")
                             email_fields = None
@@ -263,9 +291,10 @@ def watch_mode_api():
 
 def run_flask_server():
     """Run the Flask API server"""
-    port = int(os.getenv("API_PORT", 5000))
+    port = int(os.getenv("API_PORT", 5006))
     print(f"[API] Starting Flask server on port {port}...")
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    # Bind to 127.0.0.1 for maximum compatibility with ngrok
+    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
 
 
 def main():
@@ -283,7 +312,7 @@ def main():
     # Give Flask a moment to start
     time.sleep(1)
     
-    port = int(os.getenv("API_PORT", 5000))
+    port = int(os.getenv("API_PORT", 5006))
     print(f"\n[API] Endpoints available at http://localhost:{port}")
     print(f"[API]   GET  /health")
     print(f"[API]   GET  /claims-api/pending")
@@ -302,12 +331,9 @@ def main():
         print("="*70)
         
         # Clear input folder on shutdown
-        from utils import clear_input_folder
-        input_folder = CONFIG['INPUT_FOLDER']
-        clear_input_folder(input_folder)
-        
-        print("Server shutdown complete.")
-        print("="*70)
+        print()
+        clear_input_folder()
+        print()
 
 
 if __name__ == "__main__":

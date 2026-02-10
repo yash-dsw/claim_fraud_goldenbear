@@ -21,7 +21,28 @@ from contextlib import contextmanager
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
+
+# Enable CORS with explicit permissions for ngrok and local development
+CORS(app, resources={
+    r"/claims-api/*": {
+        "origins": "*",
+        "allow_headers": ["Content-Type", "Authorization", "ngrok-skip-browser-warning", "Accept"],
+        "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"]
+    },
+    r"/*": {
+        "origins": "*",
+        "allow_headers": ["*"]
+    }
+})
+
+@app.route('/debug-cors', methods=['GET'])
+def debug_cors():
+    """Endpoint to verify CORS headers from browser"""
+    return jsonify({
+        'status': 'ok',
+        'message': 'If you see this, the GET request worked. Check response headers.',
+        'headers_received': dict(request.headers)
+    })
 
 # ============================================================================
 # DATABASE CONFIGURATION
@@ -174,43 +195,6 @@ def generate_unique_claim_id():
     return datetime.now().strftime("%Y%m%d%H%M%S")[:7]
 
 
-def convert_date_to_postgres(date_str):
-    """
-    Convert date string from various formats to PostgreSQL-compatible format (YYYY-MM-DD)
-    
-    Args:
-        date_str: Date string in formats like MM/DD/YYYY or M/D/YYYY
-    
-    Returns:
-        Date string in YYYY-MM-DD format, or original string if conversion fails
-    """
-    if not date_str:
-        return None
-    
-    # If already in YYYY-MM-DD format, return as-is
-    if isinstance(date_str, str) and len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
-        return date_str
-    
-    # List of date formats to try
-    date_formats = [
-        "%m/%d/%Y",  # 10/25/2025
-        "%m-%d-%Y",  # 10-25-2025
-        "%Y/%m/%d",  # 2025/10/25
-        "%Y-%m-%d",  # 2025-10-25
-    ]
-    
-    for fmt in date_formats:
-        try:
-            date_obj = datetime.strptime(date_str, fmt)
-            return date_obj.strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    
-    # If no format matched, return as-is
-    print(f"⚠ Warning: Could not parse date '{date_str}', using as-is")
-    return date_str
-
-
 def insert_claim(claim_data):
     """
     Insert a new claim into claims_db
@@ -225,10 +209,6 @@ def insert_claim(claim_data):
         # If no claim_id provided or it's empty, generate a new one
         if not claim_data.get('claim_id') or claim_data.get('claim_id').strip() == '':
             claim_data['claim_id'] = generate_unique_claim_id()
-        
-        # Convert date_of_loss to PostgreSQL format
-        if claim_data.get('date_of_loss'):
-            claim_data['date_of_loss'] = convert_date_to_postgres(claim_data['date_of_loss'])
             print(f"[DB] Generated new claim_id: {claim_data['claim_id']}")
         
         with get_db_connection() as conn:
@@ -481,11 +461,40 @@ def get_pending_files():
     for session_id, session in sessions.items():
         # Session is pending if it has claim_data but not yet processed
         if session.claim_data and not session.processing_complete:
+            # Extract only required email fields
+            email_fields_filtered = {}
+            if session.email_fields:
+                # ONLY include required fields: Policy Number, Subject, Document Name, Comments, Timestamp
+                email_fields_filtered = {
+                    "policy_number": session.email_fields.get("policy_number", "Not Found"),
+                    "subject": session.email_fields.get("subject", "Not Found"),
+                    "document_name": session.email_fields.get("document_name", "Not Found"),
+                    "comments": session.email_fields.get("comments", ""),
+                    "timestamp": session.email_fields.get("timestamp", "")
+                }
+                
+                # ===================================================================
+                # COMMENTED OUT: Other fields not sent to frontend
+                # ===================================================================
+                # "sender_email": session.email_fields.get("sender_email", "Not Found"),
+                # "sender_name": session.email_fields.get("sender_name", "Not Found"),
+                # "receiver_email": session.email_fields.get("receiver_email", "Not Found"),
+                # "receiver_name": session.email_fields.get("receiver_name", "Not Found"),
+                # "agency_name": session.email_fields.get("agency_name", "Not Found"),
+                # "agency_id": session.email_fields.get("agency_id", "Not Found"),
+                # "email_summary": session.email_fields.get("email_summary", "Not Found"),
+                # "broker_email": session.email_fields.get("broker_email", "Not Found"),
+                # "broker_name": session.email_fields.get("broker_name", "Not Found"),
+                # "underwriter_email": session.email_fields.get("underwriter_email", "Not Found"),
+                # "underwriter_name": session.email_fields.get("underwriter_name", "Not Found"),
+                # "broker_agency_name": session.email_fields.get("broker_agency_name", "Not Found"),
+                # "broker_agency_id": session.email_fields.get("broker_agency_id", "Not Found")
+            
             pending_list.append({
                 'filename': os.path.basename(session.pdf_path) if session.pdf_path else None,
                 'claim_data': session.claim_data,
                 'email_metadata': session.email_metadata,
-                'email_fields': session.email_fields,  # Include extracted email fields
+                'email_fields': email_fields_filtered,  # Only required fields
                 'detected_at': session.created_at.isoformat(),
                 'has_email_metadata': session.email_metadata is not None,
                 'has_email_fields': session.email_fields is not None,
@@ -494,16 +503,29 @@ def get_pending_files():
             })
     
     if len(pending_list) == 0:
+        print(f"[/pending] DEBUG: No pending files, returning empty list")
         return jsonify({
-            'success': False,
+            'success': True,
+            'count': 0,
+            'files': [],
             'message': 'No pending files found. Waiting for watcher to detect files.'
-        }), 404
+        }), 200
     
-    return jsonify({
+    # DEBUG: Print the response being sent
+    print(f"\n[/pending] DEBUG: Sending response with {len(pending_list)} file(s)")
+    for idx, item in enumerate(pending_list):
+        print(f"[/pending] DEBUG: File {idx + 1}:")
+        print(f"[/pending]   Filename: {item.get('filename')}")
+        print(f"[/pending]   Email Fields: {json.dumps(item.get('email_fields', {}), indent=4)}")
+        print(f"[/pending]   Session ID: {item.get('_session_id', 'N/A')[:8]}...")
+    
+    response_data = {
         'success': True,
         'count': len(pending_list),
         'files': pending_list
-    }), 200
+    }
+    
+    return jsonify(response_data), 200
 
 
 @app.route('/claims-api/pending/latest', methods=['GET'])
@@ -526,9 +548,10 @@ def get_latest_pending_file():
     
     if not latest_session:
         return jsonify({
-            'success': False,
-            'message': 'No pending files found'
-        }), 404
+            'success': True,
+            'message': 'No pending files found',
+            'filename': None
+        }), 200
     
     return jsonify({
         'success': True,
@@ -920,12 +943,27 @@ def process_claim():
         except Exception as e:
             print(f"   ⚠ Failed to clean up local files: {e}")
         
-        # Clear all remaining files in the input folder after successful processing
-        from utils import clear_input_folder
-        clear_input_folder(CONFIG['INPUT_FOLDER'])
-        
         print(f"\n✓ Processing complete for {os.path.basename(session.pdf_path)}")
         print(f"{'='*70}\n")
+        
+        # Helper function to convert date format from MM/DD/YYYY to YYYY-MM-DD
+        def convert_date_format(date_str):
+            """Convert MM/DD/YYYY to YYYY-MM-DD for PostgreSQL"""
+            if not date_str:
+                return None
+            try:
+                from datetime import datetime
+                # Try parsing MM/DD/YYYY format
+                date_obj = datetime.strptime(date_str, "%m/%d/%Y")
+                return date_obj.strftime("%Y-%m-%d")
+            except:
+                try:
+                    # Try parsing M/D/YYYY format (single digit month/day)
+                    date_obj = datetime.strptime(date_str, "%m/%d/%Y")
+                    return date_obj.strftime("%Y-%m-%d")
+                except:
+                    # Return as-is if parsing fails
+                    return date_str
         
         # Save claim to database
         print(f"\n[DB] 💾 Saving claim to database...")
@@ -933,7 +971,7 @@ def process_claim():
             'claim_id': session.claim_data.get('claim_number', ''),  # Use claim_number instead of claim_id
             'policy_id': policy_number or session.email_fields.get('policy_number', ''),
             'claim_type': session.claim_data.get('claim_type', ''),
-            'date_of_loss': session.claim_data.get('date_of_loss'),
+            'date_of_loss': convert_date_format(session.claim_data.get('date_of_loss')),
             'claim_description': session.claim_data.get('loss_description', ''),  # Use actual loss description from PDF
             'reporting_first_name': session.claim_data.get('first_name', ''),
             'reporting_last_name': session.claim_data.get('last_name', ''),
@@ -1219,12 +1257,6 @@ def serve_claim_detail_page(claim_id):
     return send_from_directory('.', 'claim_detail.html')
 
 
-@app.route('/logo-cropped.svg')
-def serve_logo():
-    """Serve logo file"""
-    return send_from_directory('.', 'logo-cropped.svg')
-
-
 if __name__ == "__main__":
     # Test database connection on startup
     print("\n" + "="*70)
@@ -1236,7 +1268,7 @@ if __name__ == "__main__":
         print("❌ Database connection failed - check your .env configuration")
     print("="*70 + "\n")
     
-    port = int(os.getenv("API_PORT", 5000))
+    port = int(os.getenv("API_PORT", 5006))
     print(f"{'='*70}")
     print(f"CLAIMS FRAUD API SERVER")
     print(f"{'='*70}")
