@@ -18,10 +18,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import after loading env
-from api_server import app, sessions, SessionData, CONFIG
+from api_server import app, sessions, SessionData, CONFIG, pending_frontend_data
 from utils import extract_claim_fields, is_pdf_valid
 from email_sender import load_email_metadata
-from email_field_extractor import extract_email_fields
 from onedrive_client_app import OneDriveClientApp
 
 
@@ -54,8 +53,13 @@ def clear_input_folder(input_folder="input"):
 
 def watch_mode_api():
     """
-    OneDrive watcher that extracts fields and creates sessions.
-    Does NOT process claims - waits for API to trigger processing.
+    OneDrive watcher that:
+    1. Detects files in OneDrive
+    2. Extracts claim data from PDF
+    3. Loads email metadata from JSON
+    4. Runs fraud detection analysis immediately
+    5. Creates session with results
+    6. Waits for frontend to call /process with policy number for report generation
     """
     # OneDrive configuration
     tenant_id = os.getenv("ONEDRIVE_TENANT_ID")
@@ -239,23 +243,32 @@ def watch_mode_api():
                     else:
                         print(f"[WATCHER]    ⚠ No email metadata found")
                     
-                    # Extract email fields using LLM
-                    print(f"[WATCHER] 🤖 Extracting email fields with LLM...")
+                    # Email fields will be extracted by frontend - no backend extraction
+                    print(f"[WATCHER] ⏭  Email field extraction skipped (handled by frontend)")
                     email_fields = None
-                    if email_metadata:
-                        try:
-                            # Pass PDF filename to extract_email_fields for document_name
-                            email_fields = extract_email_fields(email_metadata, pdf_filename=pdf_filename)
-                            if email_fields:
-                                print(f"[WATCHER]    ✓ Email fields extracted")
-                                print(f"[WATCHER]       Policy: {email_fields.get('policy_number', 'N/A')}")
-                                print(f"[WATCHER]       Document: {email_fields.get('document_name', 'N/A')}")
-                                print(f"[WATCHER]       Subject: {email_fields.get('subject', 'N/A')[:50]}...")
-                        except Exception as e:
-                            print(f"[WATCHER]    ⚠ Email field extraction failed: {str(e)}")
-                            email_fields = None
                     
-                    # Create session
+                    # Run fraud detection immediately
+                    print(f"[WATCHER] 🔍 Starting fraud detection analysis...")
+                    from app import FraudDetectionSystem
+                    fraud_system = FraudDetectionSystem(use_ai=True)
+                    
+                    print(f"[WATCHER]    Analyzing claim for fraud...")
+                    fraud_results = fraud_system.analyze_claim(pdf_path)
+                    
+                    if "error" in fraud_results:
+                        print(f"[WATCHER] ✗ Fraud detection failed: {fraud_results['error']}")
+                        # Clean up and skip
+                        if os.path.exists(pdf_path):
+                            os.remove(pdf_path)
+                        if os.path.exists(json_path):
+                            os.remove(json_path)
+                        continue
+                    
+                    risk_level = fraud_results.get('fraud_detection', {}).get('risk_level', 'Unknown')
+                    flags_count = fraud_results.get('fraud_detection', {}).get('flags_count', 0)
+                    print(f"[WATCHER]    ✓ Analysis complete - Risk: {risk_level}, Flags: {flags_count}")
+                    
+                    # Create session with fraud results
                     session_id = str(uuid.uuid4())
                     session = SessionData(session_id)
                     session.pdf_path = pdf_path
@@ -263,6 +276,7 @@ def watch_mode_api():
                     session.claim_data = claim_data
                     session.email_metadata = email_metadata
                     session.email_fields = email_fields
+                    session.results = fraud_results  # Store fraud detection results
                     session.onedrive_pdf_id = pdf_file_info['id']
                     session.onedrive_json_id = json_file_info['id']
                     
@@ -273,7 +287,149 @@ def watch_mode_api():
                     print(f"[WATCHER] 📌 Marked file as processed: {pdf_file_info['id'][:20]}...")
                     
                     print(f"[WATCHER] ✓ Session created: {session_id[:8]}...")
-                    print(f"[WATCHER] ⏳ Waiting for frontend to confirm via API")
+                    
+                    # Check if frontend already sent data for this file
+                    if pdf_filename in pending_frontend_data:
+                        print(f"[WATCHER] 🎯 Found pending frontend data for {pdf_filename}")
+                        frontend_data = pending_frontend_data[pdf_filename]
+                        
+                        if not frontend_data.get('processed', False):
+                            print(f"[WATCHER] 📋 Processing with frontend data immediately...")
+                            
+                            # Store frontend data in session
+                            session.confirmed_email_fields = frontend_data['email_fields']
+                            
+                            # Handle form PDF if provided
+                            if frontend_data.get('form_pdf_base64'):
+                                try:
+                                    import base64
+                                    pdf_bytes = base64.b64decode(frontend_data['form_pdf_base64'])
+                                    form_pdf_filename = f"form_{pdf_filename.replace('.pdf', '')}.pdf"
+                                    form_pdf_path = os.path.join(input_folder, form_pdf_filename)
+                                    with open(form_pdf_path, 'wb') as f:
+                                        f.write(pdf_bytes)
+                                    session.form_pdf_path = form_pdf_path
+                                    print(f"[WATCHER]    ✓ Form PDF saved")
+                                except Exception as e:
+                                    print(f"[WATCHER]    ⚠ Form PDF failed: {e}")
+                            
+                            # Trigger report generation immediately
+                            try:
+                                policy_number = frontend_data['email_fields'].get('policy_number')
+                                print(f"[WATCHER]    Policy: {policy_number}")
+                                
+                                # Update fraud results with frontend policy number
+                                if policy_number and 'claim_data' in fraud_results:
+                                    fraud_results['claim_data']['policy_number'] = policy_number
+                                    session.results = fraud_results
+                                
+                                # Generate reports
+                                fraud_system.generate_report(fraud_results, output_format="console")
+                                
+                                # Create claims folder
+                                claims_folder_path = None
+                                if policy_number and fraud_system.onedrive_client:
+                                    claim_subfolder_name = f"CN_{policy_number}"
+                                    claims_fraud_folder = fraud_system.onedrive_claims_fraud_folder
+                                    folder_id, claims_folder_path = fraud_system.onedrive_client.create_subfolder(
+                                        claims_fraud_folder, claim_subfolder_name
+                                    )
+                                    session.claims_folder_path = claims_folder_path
+                                    print(f"[WATCHER]    ✓ Folder: {claims_folder_path}")
+                                
+                                # Save results
+                                output_paths = fraud_system.save_results(
+                                    fraud_results,
+                                    email_metadata=email_metadata,
+                                    input_pdf_path=pdf_path,
+                                    claims_folder_path=claims_folder_path,
+                                    confirmed_policy_number=policy_number
+                                )
+                                
+                                if output_paths and len(output_paths) >= 3:
+                                    session.output_pdf_path = output_paths[2]
+                                    
+                                    # Get OneDrive URLs
+                                    if fraud_system.onedrive_client and claims_folder_path:
+                                        try:
+                                            folder_info = fraud_system.onedrive_client.get_subfolder_info(claims_folder_path)
+                                            if folder_info and folder_info.get('web_url'):
+                                                session.claims_folder_url = folder_info['web_url']
+                                                session.output_pdf_url = folder_info['web_url']
+                                        except Exception as e:
+                                            print(f"[WATCHER]    ⚠ URL error: {e}")
+                                
+                                # Upload form PDF if present - DISABLED
+                                # if session.form_pdf_path and fraud_system.onedrive_client and claims_folder_path:
+                                #     try:
+                                #         import requests
+                                #         upload_url = f"https://graph.microsoft.com/v1.0/users/{fraud_system.onedrive_client.user_email}/drive/root:/{claims_folder_path}/form_response.pdf:/content"
+                                #         with open(session.form_pdf_path, 'rb') as f:
+                                #             headers = fraud_system.onedrive_client._get_headers()
+                                #             headers["Content-Type"] = "application/octet-stream"
+                                #             response = requests.put(upload_url, headers=headers, data=f.read())
+                                #             if response.status_code in [200, 201]:
+                                #                 print(f"[WATCHER]    ✓ Form PDF uploaded")
+                                #     except Exception as e:
+                                #         print(f"[WATCHER]    ⚠ Form upload failed: {e}")
+                                
+                                session.processing_complete = True
+                                
+                                # Save to database
+                                try:
+                                    from api_server import insert_claim
+                                    claim_db_data = fraud_results.get('claim_data', {})
+                                    
+                                    # Ensure policy_number is mapped to policy_id for database
+                                    if 'policy_number' in claim_db_data and not claim_db_data.get('policy_id'):
+                                        claim_db_data['policy_id'] = claim_db_data['policy_number']
+                                    
+                                    # Use loss description from claim form for claim description
+                                    if not claim_db_data.get('claim_description'):
+                                        claim_db_data['claim_description'] = claim_db_data.get('loss_description', '')
+                                    
+                                    # Handle "Same as Reporter" logic - copy insured data to reporting if reporting is empty
+                                    insured_same = claim_db_data.get('insured_same_as_reporter', False)
+                                    if insured_same:
+                                        # Copy insured fields to reporting fields if reporting fields are empty
+                                        if not claim_db_data.get('reporting_first_name'):
+                                            claim_db_data['reporting_first_name'] = claim_db_data.get('insured_first_name', '')
+                                        if not claim_db_data.get('reporting_last_name'):
+                                            claim_db_data['reporting_last_name'] = claim_db_data.get('insured_last_name', '')
+                                        if not claim_db_data.get('reporting_address'):
+                                            claim_db_data['reporting_address'] = claim_db_data.get('insured_address', '')
+                                        if not claim_db_data.get('reporting_city'):
+                                            claim_db_data['reporting_city'] = claim_db_data.get('insured_city', '')
+                                        if not claim_db_data.get('reporting_state'):
+                                            claim_db_data['reporting_state'] = claim_db_data.get('insured_state', '')
+                                        if not claim_db_data.get('reporting_zip'):
+                                            claim_db_data['reporting_zip'] = claim_db_data.get('insured_zip', '')
+                                        if not claim_db_data.get('reporting_email'):
+                                            claim_db_data['reporting_email'] = claim_db_data.get('insured_email', '')
+                                        if not claim_db_data.get('reporting_phone'):
+                                            claim_db_data['reporting_phone'] = claim_db_data.get('insured_phone', '')
+                                    
+                                    claim_db_data['folder_url'] = session.claims_folder_url
+                                    claim_db_data['claim_status'] = 'Submitted'
+                                    db_claim_id = insert_claim(claim_db_data)
+                                    print(f"[WATCHER]    ✓ Saved to DB: {db_claim_id}")
+                                except Exception as e:
+                                    print(f"[WATCHER]    ⚠ DB save failed: {e}")
+                                
+                                print(f"[WATCHER] ✓ Processing complete with frontend data!")
+                                
+                                # Mark as processed
+                                frontend_data['processed'] = True
+                                
+                            except Exception as e:
+                                print(f"[WATCHER]    ✗ Report generation failed: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            print(f"[WATCHER] ℹ Frontend data already processed")
+                    else:
+                        print(f"[WATCHER] ⏳ Waiting for frontend to call /process with policy number")
+                    
                     print(f"[WATCHER] {'='*60}\n")
                     
                 except Exception as e:
@@ -315,10 +471,9 @@ def main():
     port = int(os.getenv("API_PORT", 5006))
     print(f"\n[API] Endpoints available at http://localhost:{port}")
     print(f"[API]   GET  /health")
-    print(f"[API]   GET  /claims-api/pending")
-    print(f"[API]   GET  /claims-api/pending/latest")
-    print(f"[API]   POST /claims-api/email-fields")
-    print(f"[API]   POST /claims-api/process")
+    print(f"[API]   POST /claims-api/process           (Primary: accepts email_fields)")
+    print(f"[API]   GET  /claims-api/pending           (Optional: list pending files)")
+    print(f"[API]   POST /claims-api/email-fields      (Legacy: use /process instead)")
     print(f"[API]   GET  /claims-api/output-pdf")
     print()
     

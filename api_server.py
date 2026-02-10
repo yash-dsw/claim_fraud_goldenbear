@@ -1,8 +1,9 @@
 """
 Flask API Server for Claims Fraud Detection
-Splits the workflow into two parts:
-1. Watcher detects files, extracts details, stores in session
-2. Frontend confirms email fields, triggers processing via API
+Workflow:
+1. Watcher detects files, extracts claim data, runs fraud detection, stores session
+2. Frontend extracts email fields and directly calls /process endpoint with fields
+3. Backend generates and saves reports using frontend-provided policy number
 """
 
 import os
@@ -108,6 +109,9 @@ os.makedirs(CONFIG['OUTPUT_FOLDER'], exist_ok=True)
 # In-memory session storage (shared with watcher)
 sessions = {}
 
+# Store frontend data that arrives before watcher completes (keyed by filename)
+pending_frontend_data = {}
+
 
 class SessionData:
     """Store session data for a claims fraud processing request"""
@@ -119,7 +123,7 @@ class SessionData:
         self.json_path = None
         self.claim_data = None  # Extracted claim fields
         self.email_metadata = None  # From companion JSON
-        self.email_fields = None  # LLM-extracted email fields (sender, receiver, etc.)
+        self.email_fields = None  # Email fields are now extracted by frontend (not backend)
         self.confirmed_email_fields = None  # Confirmed by frontend
         self.processing_complete = False
         self.results = None  # Fraud analysis results
@@ -154,10 +158,23 @@ class SessionData:
 
 # Remove expired sessions
 def cleanup_expired_sessions():
-    """Remove expired sessions"""
+    """Remove expired sessions and old pending frontend data"""
+    # Clean up expired sessions
     expired = [sid for sid, session in sessions.items() if session.is_expired()]
     for sid in expired:
         sessions.pop(sid, None)
+    
+    # Clean up old pending frontend data (older than 30 minutes)
+    timeout = timedelta(minutes=CONFIG['SESSION_TIMEOUT_MINUTES'])
+    expired_pending = []
+    for filename, data in pending_frontend_data.items():
+        if 'received_at' in data:
+            received_time = datetime.fromisoformat(data['received_at'])
+            if datetime.now() - received_time > timeout:
+                expired_pending.append(filename)
+    
+    for filename in expired_pending:
+        pending_frontend_data.pop(filename, None)
 
 
 # ============================================================================
@@ -246,12 +263,30 @@ def insert_claim(claim_data):
                     RETURNING claim_id
                 """
                 
+                # Parse and convert date_of_loss to PostgreSQL format
+                date_of_loss_value = claim_data.get('date_of_loss')
+                if date_of_loss_value and isinstance(date_of_loss_value, str):
+                    try:
+                        # Try MM/DD/YYYY format first (common US format)
+                        from datetime import datetime
+                        parsed_date = datetime.strptime(date_of_loss_value, '%m/%d/%Y')
+                        date_of_loss_value = parsed_date.strftime('%Y-%m-%d')
+                    except ValueError:
+                        try:
+                            # Try YYYY-MM-DD format
+                            parsed_date = datetime.strptime(date_of_loss_value, '%Y-%m-%d')
+                            date_of_loss_value = parsed_date.strftime('%Y-%m-%d')
+                        except ValueError:
+                            # If still fails, set to None
+                            print(f"[DB] Warning: Could not parse date '{date_of_loss_value}', setting to NULL")
+                            date_of_loss_value = None
+                
                 # Prepare data with defaults - ensure claim_description is included
                 prepared_data = {
                     'claim_id': claim_data.get('claim_id'),
                     'policy_id': claim_data.get('policy_id'),
                     'claim_type': claim_data.get('claim_type'),
-                    'date_of_loss': claim_data.get('date_of_loss'),
+                    'date_of_loss': date_of_loss_value,
                     'claim_description': claim_data.get('claim_description', ''),  # Ensure it's not None
                     'reporting_first_name': claim_data.get('reporting_first_name'),
                     'reporting_last_name': claim_data.get('reporting_last_name'),
@@ -499,6 +534,11 @@ def get_pending_files():
                 'has_email_metadata': session.email_metadata is not None,
                 'has_email_fields': session.email_fields is not None,
                 'has_confirmed_fields': session.confirmed_email_fields is not None,
+                'fraud_analysis_complete': session.results is not None,  # Fraud detection status
+                'risk_info': {
+                    'risk_level': session.results.get('fraud_detection', {}).get('risk_level', 'Unknown'),
+                    'flags_count': session.results.get('fraud_detection', {}).get('flags_count', 0)
+                } if session.results else None,
                 '_session_id': session_id
             })
     
@@ -707,24 +747,34 @@ def confirm_email_fields():
 @app.route('/claims-api/process', methods=['POST'])
 def process_claim():
     """
-    PART 2: Process claim after frontend confirms email fields
+    Process claim and generate report with frontend-provided email fields.
     
-    This triggers the fraud analysis and report generation.
+    Frontend sends email fields directly (no need for /email-fields or /pending).
     
     Expects JSON:
     {
-        "filename": "C1_test.pdf"  // Required to identify which file
+        "filename": "C1_test.pdf",  // Required to identify which file
+        "email_fields": {           // Required: email fields from frontend
+            "policy_number": "...",
+            "subject": "...",
+            "document_name": "...",
+            "comments": "...",
+            "timestamp": "..."
+        },
+        "form_pdf": "base64_encoded_pdf"  // Optional: form PDF from frontend
     }
     
     OR:
     {
-        "session_id": "..."
+        "session_id": "...",
+        "email_fields": { ... },
+        "form_pdf": "base64_encoded_pdf"
     }
     
     Returns:
     - success: Boolean
     - results: Fraud analysis results
-    - report_path: Path to generated report
+    - claims_folder: Path to claims folder
     """
     cleanup_expired_sessions()
     
@@ -733,6 +783,13 @@ def process_claim():
         
         if not data:
             return jsonify({'error': 'No JSON data provided'}), 400
+        
+        # Extract email fields and form PDF from request
+        email_fields = data.get('email_fields', {})
+        form_pdf_base64 = data.get('form_pdf')
+        
+        if not email_fields:
+            return jsonify({'error': 'email_fields is required in request body'}), 400
         
         # Find session
         session = None
@@ -752,8 +809,27 @@ def process_claim():
             return jsonify({'error': 'Either filename or session_id is required'}), 400
         
         if not session:
+            # Session doesn't exist yet - watcher hasn't finished processing
+            # Store frontend data for when session is ready
             if filename:
-                return jsonify({'error': f'No session found for filename: {filename}'}), 404
+                print(f"\n[PROCESS] No session found yet for {filename}")
+                print(f"[PROCESS] Storing frontend data for later use...")
+                
+                pending_frontend_data[filename] = {
+                    'email_fields': email_fields,
+                    'form_pdf_base64': form_pdf_base64,
+                    'received_at': datetime.now().isoformat(),
+                    'processed': False
+                }
+                
+                print(f"[PROCESS] ✓ Frontend data stored. Will process when watcher completes.")
+                
+                return jsonify({
+                    'success': True,
+                    'status': 'pending',
+                    'message': 'Data received. Processing will complete when file detection finishes.',
+                    'filename': filename
+                }), 200
             else:
                 return jsonify({'error': 'Session not found or expired'}), 404
         
@@ -768,9 +844,42 @@ def process_claim():
                 'output_pdf_url': session.output_pdf_url
             }), 200
         
+        # Store confirmed email fields from frontend
+        session.confirmed_email_fields = email_fields
+        policy_number = email_fields.get('policy_number')
+        
         print(f"\n{'='*70}")
         print(f"PROCESSING REQUEST - Session: {session_id}")
         print(f"{'='*70}")
+        print(f"Email fields received from frontend:")
+        print(f"  Policy: {policy_number}")
+        print(f"  Subject: {email_fields.get('subject', 'N/A')[:50]}...")
+        print(f"  Document: {email_fields.get('document_name', 'N/A')}")
+        
+        # Handle form PDF upload if provided
+        form_pdf_uploaded = False
+        if form_pdf_base64:
+            try:
+                import base64
+                
+                # Decode base64 PDF
+                pdf_bytes = base64.b64decode(form_pdf_base64)
+                
+                # Save form PDF locally first
+                form_pdf_filename = f"form_{os.path.basename(session.pdf_path).replace('.pdf', '')}.pdf"
+                form_pdf_path = os.path.join(CONFIG['OUTPUT_FOLDER'], form_pdf_filename)
+                
+                with open(form_pdf_path, 'wb') as f:
+                    f.write(pdf_bytes)
+                
+                print(f"  ✓ Form PDF saved: {form_pdf_filename}")
+                
+                # Store path in session for later upload to claims folder
+                session.form_pdf_path = form_pdf_path
+                form_pdf_uploaded = True
+                    
+            except Exception as e:
+                print(f"  ⚠ Failed to process form PDF: {str(e)}")
         
         # Import fraud detection system
         from app import FraudDetectionSystem
@@ -780,40 +889,38 @@ def process_claim():
         # Initialize fraud system
         fraud_system = FraudDetectionSystem(use_ai=True)
         
-        # Process the claim
-        print(f"\n🔍 Processing claim: {os.path.basename(session.pdf_path)}")
-        results = fraud_system.analyze_claim(session.pdf_path)
+        # Use stored fraud detection results (already analyzed by watcher)
+        print(f"\n📋 Checking fraud analysis results...")
         
-        if "error" in results:
+        if not session.results:
+            # Watcher hasn't completed fraud analysis yet
+            # Store frontend data in session for when analysis completes
+            print(f"[PROCESS] Fraud analysis not ready yet. Storing frontend data...")
+            session.confirmed_email_fields = email_fields
+            
             return jsonify({
-                'success': False,
-                'error': results['error']
-            }), 500
+                'success': True,
+                'status': 'pending_analysis',
+                'message': 'Data received. Report will generate when fraud analysis completes.',
+                'filename': filename
+            }), 200
         
-        # Get policy number BEFORE storing results - priority order:
-        # 1. Confirmed email fields (user might have corrected it)
-        # 2. Extracted email fields (from LLM)
-        # 3. Claim data (from PDF extraction)
-        policy_number = None
-        if session.confirmed_email_fields and session.confirmed_email_fields.get('policy_number'):
-            policy_number = session.confirmed_email_fields.get('policy_number')
-            print(f"[POLICY] Using confirmed policy number: {policy_number}")
-        elif session.email_fields and session.email_fields.get('policy_number'):
-            policy_number = session.email_fields.get('policy_number')
-            print(f"[POLICY] Using extracted policy number: {policy_number}")
-        elif session.email_metadata:
-            # Fallback: Extract from email metadata using agent
-            subject = session.email_metadata.get("subject", "")
-            body = session.email_metadata.get("bodyPreview", "") or session.email_metadata.get("body", "")
-            policy_number = fraud_system.agent.extract_policy_number(subject, body)
-            print(f"[POLICY] Extracted policy number from email: {policy_number}")
+        print(f"   ✓ Fraud analysis complete")
+        results = session.results
+        print(f"   Risk Level: {results.get('fraud_detection', {}).get('risk_level', 'Unknown')}")
+        print(f"   Flags: {results.get('fraud_detection', {}).get('flags_count', 0)}")
         
-        # Update results with confirmed policy number BEFORE storing in session
+        # Use policy number from frontend (simple and direct)
+        print(f"\n[POLICY] Using policy number from frontend: {policy_number}")
+        
+        # Update results with frontend policy number
         if policy_number and 'claim_data' in results:
+            original_policy = results['claim_data'].get('policy_number', 'Unknown')
+            if original_policy != policy_number:
+                print(f"[POLICY] Policy number corrected: {original_policy} → {policy_number}")
             results['claim_data']['policy_number'] = policy_number
-            print(f"[POLICY] ✓ Updated results with confirmed policy number: {policy_number}")
         
-        # Now store the updated results in session
+        # Store updated results
         session.results = results
         
         # Generate console report
@@ -886,43 +993,56 @@ def process_claim():
         
         session.processing_complete = True
         
-        # Upload form PDF to claims folder if available
-        if session.form_pdf_path and fraud_system.onedrive_client and claims_folder_path:
-            try:
-                print(f"\n[FORM_PDF] Uploading form PDF to claims folder as 'form_response.pdf'...")
-                # Upload with custom name 'form_response.pdf'
-                upload_url = f"https://graph.microsoft.com/v1.0/users/{fraud_system.onedrive_client.user_email}/drive/root:/{claims_folder_path}/form_response.pdf:/content"
-                
-                with open(session.form_pdf_path, 'rb') as f:
-                    file_content = f.read()
-                
-                headers = fraud_system.onedrive_client._get_headers()
-                headers["Content-Type"] = "application/octet-stream"
-                
-                import requests
-                response = requests.put(upload_url, headers=headers, data=file_content)
-                response.raise_for_status()
-                
-                result = response.json()
-                if result.get('webUrl'):
-                    session.form_pdf_url = result.get('webUrl')
-                    print(f"[FORM_PDF] ✓ Form PDF uploaded to {claims_folder_path} as 'form_response.pdf'")
-                    print(f"[FORM_PDF]   URL: {session.form_pdf_url}")
-                else:
-                    print(f"[FORM_PDF] ⚠ Form PDF uploaded but no URL returned")
-            except Exception as e:
-                print(f"[FORM_PDF] ⚠ Error uploading form PDF: {e}")
+        # Upload form PDF to claims folder if available - DISABLED
+        # if session.form_pdf_path and fraud_system.onedrive_client and claims_folder_path:
+        #     try:
+        #         print(f"\n[FORM_PDF] Uploading form PDF to claims folder as 'form_response.pdf'...")
+        #         # Upload with custom name 'form_response.pdf'
+        #         upload_url = f"https://graph.microsoft.com/v1.0/users/{fraud_system.onedrive_client.user_email}/drive/root:/{claims_folder_path}/form_response.pdf:/content"
+        #         
+        #         with open(session.form_pdf_path, 'rb') as f:
+        #             file_content = f.read()
+        #         
+        #         headers = fraud_system.onedrive_client._get_headers()
+        #         headers["Content-Type"] = "application/octet-stream"
+        #         
+        #         import requests
+        #         response = requests.put(upload_url, headers=headers, data=file_content)
+        #         response.raise_for_status()
+        #         
+        #         result = response.json()
+        #         if result.get('webUrl'):
+        #             session.form_pdf_url = result.get('webUrl')
+        #             print(f"[FORM_PDF] ✓ Form PDF uploaded to {claims_folder_path} as 'form_response.pdf'")
+        #             print(f"[FORM_PDF]   URL: {session.form_pdf_url}")
+        #         else:
+        #             print(f"[FORM_PDF] ⚠ Form PDF uploaded but no URL returned")
+        #     except Exception as e:
+        #         print(f"[FORM_PDF] ⚠ Error uploading form PDF: {e}")
         
         # Move files on OneDrive
         if fraud_system.onedrive_client:
             onedrive = fraud_system.onedrive_client
+            pdf_moved_successfully = False
             
             if claims_folder_path and session.onedrive_pdf_id:
                 try:
+                    # Store the file ID before moving
+                    original_pdf_id = session.onedrive_pdf_id
+                    
+                    # Move the PDF to claims folder
                     onedrive.move_file_to_path(session.onedrive_pdf_id, claims_folder_path)
                     print(f"   ✓ Moved PDF to {claims_folder_path}")
+                    pdf_moved_successfully = True
+                    
                 except Exception as e:
                     print(f"   ⚠ Failed to move PDF: {e}")
+                    # If move failed, try to delete it from input_attachments to clean up
+                    try:
+                        onedrive.delete_file(session.onedrive_pdf_id)
+                        print(f"   ✓ Deleted PDF from input_attachments folder")
+                    except Exception as del_e:
+                        print(f"   ⚠ Failed to delete PDF from input_attachments: {del_e}")
             
             if session.onedrive_json_id:
                 try:
@@ -967,21 +1087,61 @@ def process_claim():
         
         # Save claim to database
         print(f"\n[DB] 💾 Saving claim to database...")
+        
+        # Get policy_number from confirmed fields (frontend) or results
+        db_policy_id = policy_number
+        if not db_policy_id:
+            db_policy_id = results.get('claim_data', {}).get('policy_number', '')
+        if not db_policy_id and session.confirmed_email_fields:
+            db_policy_id = session.confirmed_email_fields.get('policy_number', '')
+        
+        # Handle "Same as Reporter" logic - copy insured data to reporting if reporting is empty
+        insured_same_as_reporter = session.claim_data.get('insured_same_as_reporter', False)
+        
+        # Get reporting party fields (might be empty if insured_same_as_reporter is true)
+        reporting_first_name = session.claim_data.get('first_name', '')
+        reporting_last_name = session.claim_data.get('last_name', '')
+        reporting_address = session.claim_data.get('address', '')
+        reporting_city = session.claim_data.get('city', '')
+        reporting_state = session.claim_data.get('state', '')
+        reporting_zip = session.claim_data.get('zip_code', '')
+        reporting_email = session.claim_data.get('email', '')
+        reporting_phone = session.claim_data.get('phone_number', '')
+        
+        # If reporting fields are empty and insured_same_as_reporter is true, copy from insured fields
+        if insured_same_as_reporter:
+            if not reporting_first_name:
+                reporting_first_name = session.claim_data.get('insured_first_name', '')
+            if not reporting_last_name:
+                reporting_last_name = session.claim_data.get('insured_last_name', '')
+            if not reporting_address:
+                reporting_address = session.claim_data.get('insured_address', '')
+            if not reporting_city:
+                reporting_city = session.claim_data.get('insured_city', '')
+            if not reporting_state:
+                reporting_state = session.claim_data.get('insured_state', '')
+            if not reporting_zip:
+                reporting_zip = session.claim_data.get('insured_zip', '')
+            if not reporting_email:
+                reporting_email = session.claim_data.get('insured_email', '')
+            if not reporting_phone:
+                reporting_phone = session.claim_data.get('insured_phone', '')
+        
         claim_db_data = {
             'claim_id': session.claim_data.get('claim_number', ''),  # Use claim_number instead of claim_id
-            'policy_id': policy_number or session.email_fields.get('policy_number', ''),
+            'policy_id': db_policy_id,  # Use policy_number from frontend
             'claim_type': session.claim_data.get('claim_type', ''),
             'date_of_loss': convert_date_format(session.claim_data.get('date_of_loss')),
-            'claim_description': session.claim_data.get('loss_description', ''),  # Use actual loss description from PDF
-            'reporting_first_name': session.claim_data.get('first_name', ''),
-            'reporting_last_name': session.claim_data.get('last_name', ''),
-            'reporting_address': session.claim_data.get('address', ''),
-            'reporting_city': session.claim_data.get('city', ''),
-            'reporting_state': session.claim_data.get('state', ''),
-            'reporting_zip': session.claim_data.get('zip_code', ''),
-            'reporting_email': session.claim_data.get('email', ''),
-            'reporting_phone': session.claim_data.get('phone_number', ''),
-            'insured_same_as_reporter': session.claim_data.get('insured_same_as_reporter', False),
+            'claim_description': session.claim_data.get('loss_description', ''),  # Use description from claim form
+            'reporting_first_name': reporting_first_name,
+            'reporting_last_name': reporting_last_name,
+            'reporting_address': reporting_address,
+            'reporting_city': reporting_city,
+            'reporting_state': reporting_state,
+            'reporting_zip': reporting_zip,
+            'reporting_email': reporting_email,
+            'reporting_phone': reporting_phone,
+            'insured_same_as_reporter': insured_same_as_reporter,
             'insured_first_name': session.claim_data.get('insured_first_name', ''),
             'insured_last_name': session.claim_data.get('insured_last_name', ''),
             'insured_address': session.claim_data.get('insured_address', ''),
@@ -1257,6 +1417,12 @@ def serve_claim_detail_page(claim_id):
     return send_from_directory('.', 'claim_detail.html')
 
 
+@app.route('/logo-cropped.svg')
+def serve_logo():
+    """Serve logo file"""
+    return send_from_directory('.', 'logo-cropped.svg', mimetype='image/svg+xml')
+
+
 if __name__ == "__main__":
     # Test database connection on startup
     print("\n" + "="*70)
@@ -1275,10 +1441,9 @@ if __name__ == "__main__":
     print(f"Starting on port {port}...")
     print(f"Endpoints:")
     print(f"  GET  /health                   - Health check")
-    print(f"  GET  /claims-api/pending       - List pending files")
-    print(f"  POST /claims-api/email-fields  - Confirm fields")
-    print(f"  POST /claims-api/process        - Process claim")
-    print(f"  GET  /claims-api/output-pdf     - Get output PDF URL")
+    print(f"  POST /claims-api/process       - Process claim (accepts email_fields)")
+    print(f"  GET  /claims-api/pending       - List pending files (optional)")
+    print(f"  GET  /claims-api/output-pdf    - Get output PDF URL")
     print(f"  GET  /api/claims               - Get all claims from DB")
     print(f"  GET  /claims                   - Serve claims page")
     print(f"{'='*70}\n")
