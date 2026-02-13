@@ -447,7 +447,7 @@ def watch_mode_api():
 
 def run_flask_server():
     """Run the Flask API server"""
-    port = int(os.getenv("API_PORT", 5006))
+    port = int(os.getenv("API_PORT", 5002))
     print(f"[API] Starting Flask server on port {port}...")
     # Bind to 127.0.0.1 for maximum compatibility with ngrok
     app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
@@ -468,7 +468,7 @@ def main():
     # Give Flask a moment to start
     time.sleep(1)
     
-    port = int(os.getenv("API_PORT", 5006))
+    port = int(os.getenv("API_PORT", 5002))
     print(f"\n[API] Endpoints available at http://localhost:{port}")
     print(f"[API]   GET  /health")
     print(f"[API]   POST /claims-api/process           (Primary: accepts email_fields)")

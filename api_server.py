@@ -1434,7 +1434,7 @@ if __name__ == "__main__":
         print("❌ Database connection failed - check your .env configuration")
     print("="*70 + "\n")
     
-    port = int(os.getenv("API_PORT", 5006))
+    port = int(os.getenv("API_PORT", 5002))
     print(f"{'='*70}")
     print(f"CLAIMS FRAUD API SERVER")
     print(f"{'='*70}")
