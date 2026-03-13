@@ -1377,6 +1377,34 @@ def api_get_claim_detail(claim_id):
             'error': str(e)
         }), 500
 
+@app.route('/api/claims/<claim_id>/documents', methods=['GET'])
+def api_get_claim_documents(claim_id):
+    """List files in the OneDrive claims folder for a given claim."""
+    try:
+        claim = get_claim_by_id(claim_id)
+        if not claim:
+            return jsonify({'success': False, 'error': 'Claim not found'}), 404
+
+        policy_id = claim.get('policy_id')
+        if not policy_id:
+            return jsonify({'success': True, 'documents': []})
+
+        folder_path = f"Claims_fraud/CN_{policy_id}"
+
+        from onedrive_client_app import OneDriveClientApp
+        client = OneDriveClientApp(
+            tenant_id=CONFIG['TENANT_ID'],
+            client_id=CONFIG['CLIENT_ID'],
+            client_secret=CONFIG['CLIENT_SECRET'],
+            user_email=CONFIG['USER_EMAIL'],
+        )
+
+        files = client.list_files_in_subfolder(folder_path)
+        return jsonify({'success': True, 'documents': files, 'folder_path': folder_path})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+ 
 
 @app.route('/api/policies/<policy_id>', methods=['GET'])
 def api_get_policy(policy_id):

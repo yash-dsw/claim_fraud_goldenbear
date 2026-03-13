@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+​<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -307,6 +307,133 @@
                 align-items: flex-start;
             }
         }
+
+        .doc-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .doc-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: #fff;
+            border: 1px solid #dde3ec;
+            border-radius: 8px;
+            transition: background 0.15s;
+        }
+
+        .doc-row:hover {
+            background: #f0f5ff;
+        }
+
+        .doc-icon {
+            font-size: 22px;
+            flex-shrink: 0;
+        }
+
+        .doc-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .doc-name {
+            font-weight: 600;
+            color: #1a1a2e;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .doc-meta {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 2px;
+        }
+
+        .doc-open-btn {
+            flex-shrink: 0;
+            display: inline-block;
+            background: #0066cc;
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .doc-open-btn:hover {
+            background: #0052a3;
+        }
+
+        .doc-loading {
+            color: #6b7280;
+            font-style: italic;
+            padding: 8px 0;
+        }
+
+        /* --- Document table --- */
+        .docs-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .docs-table th {
+            text-align: left;
+            font-size: 11px;
+            font-weight: 600;
+            color: #8b92a0;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 10px 14px;
+            border-bottom: 2px solid #f1f3f5;
+        }
+
+        .docs-table td {
+            padding: 12px 14px;
+            border-bottom: 1px solid #f1f3f5;
+            font-size: 14px;
+            color: #1a1f36;
+            vertical-align: middle;
+        }
+
+        .docs-table tr:last-child td { border-bottom: none; }
+        .docs-table tr:hover td { background: #fafbfc; }
+
+        .doc-name-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #1a1f36;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .doc-name-link:hover { color: #0066cc; }
+
+        .doc-icon-pdf  { background: #fde8e8; color: #e53e3e; width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+        .doc-icon-html { background: #fef3c7; color: #d69e2e; width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+        .doc-icon-json { background: #e6f3ff; color: #0066cc; width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+        .doc-icon-eml  { background: #f0e6ff; color: #7c3aed; width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+        .doc-icon-def  { background: #f1f3f5; color: #6b7280; width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+
+        .doc-type-badge {
+            display: inline-block;
+            padding: 3px 9px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            background: #f1f3f5;
+            color: #4a5568;
+            letter-spacing: 0.5px;
+        }
+
     </style>
 </head>
 
@@ -359,6 +486,7 @@
 
                 if (data.success) {
                     renderClaimDetails(data.claim, data.policy);
+                    loadClaimsFolder(claimId, data.claim.folder_url);
                 } else {
                     content.innerHTML = `
                         <div class="error-message">
@@ -374,6 +502,76 @@
                         <strong>Error:</strong> Failed to load claim details. Make sure the server is running.
                     </div>
                 `;
+            }
+        }
+
+        async function loadClaimsFolder(claimId, folderUrl) {
+            const section = document.getElementById('claims-folder-section');
+            const headerActions = document.getElementById('claims-folder-header-actions');
+            if (!section) return;
+
+            if (folderUrl && headerActions) {
+                headerActions.innerHTML = `
+                    <a class="doc-open-btn" href="${folderUrl}" target="_blank" style="padding:7px 16px;font-size:13px;">
+                        🔗 Open Folder
+                    </a>`;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE_URL}/api/claims/${claimId}/documents`);
+                const data = await res.json();
+
+                if (!data.success || !data.documents || data.documents.length === 0) {
+                    section.innerHTML = '<p class="doc-empty" style="padding:20px 0;color:#a0aec0;font-style:italic;">No documents found in this claims folder.</p>';
+                    return;
+                }
+
+                const docs = data.documents;
+                const titleEl = document.querySelector('#claims-folder-card .card-title');
+                if (titleEl) titleEl.innerHTML = `📁 Claims Folder &nbsp;<span class="status-badge" style="background:#e6f3ff;color:#0066cc;font-size:12px;">${docs.length} file${docs.length !== 1 ? 's' : ''}</span>`;
+
+                section.innerHTML = `
+                    <table class="docs-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Uploaded</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${docs.map(doc => {
+                                const ext = doc.name.split('.').pop().toLowerCase();
+                                const iconClass = ext === 'pdf'  ? 'doc-icon-pdf'
+                                               : ext === 'json' ? 'doc-icon-json'
+                                               : ext === 'html' ? 'doc-icon-html'
+                                               : ext === 'eml'  ? 'doc-icon-eml'
+                                               : 'doc-icon-def';
+                                const icon = ext === 'pdf'  ? '📄'
+                                           : ext === 'json' ? '📋'
+                                           : ext === 'html' ? '🌐'
+                                           : ext === 'eml'  ? '✉️'
+                                           : '📎';
+                                const uploaded = doc.modified
+                                    ? new Date(doc.modified).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+                                    : '—';
+                                return `<tr>
+                                    <td>
+                                        <a class="doc-name-link" href="${doc.web_url || '#'}" target="_blank">
+                                            <span class="doc-icon ${iconClass}">${icon}</span>
+                                            ${doc.name}
+                                        </a>
+                                    </td>
+                                    <td><span class="doc-type-badge">${ext}</span></td>
+                                    <td style="color:#6b7280;font-size:13px;">${uploaded}</td>
+                                    <td>${doc.web_url ? `<a class="doc-open-btn" href="${doc.web_url}" target="_blank" style="padding:5px 12px;font-size:12px;">Download</a>` : ''}</td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>`;
+            } catch (err) {
+                if (section) section.innerHTML = '<p class="doc-empty" style="padding:20px 0;color:#a0aec0;">Could not load documents.</p>';
             }
         }
 
@@ -423,21 +621,17 @@
                             <p>${claim.claim_description}</p>
                         </div>
                     ` : ''}
+                </div>
 
-                    ${claim.folder_url ? `
-                        <div class="description-box" style="background: #e6f3ff; border-left-color: #0066cc; margin-top: 15px;">
-                            <h4>📁 Claims Folder</h4>
-                            <p style="margin-bottom: 10px;">View all documents related to this claim in OneDrive:</p>
-                            <a href="${claim.folder_url}" target="_blank" 
-                               style="display: inline-block; background: #0066cc; color: white; 
-                                      padding: 10px 20px; border-radius: 6px; text-decoration: none; 
-                                      font-weight: 600; transition: all 0.3s;"
-                               onmouseover="this.style.background='#0052a3'"
-                               onmouseout="this.style.background='#0066cc'">
-                                🔗 Open Claims Folder
-                            </a>
-                        </div>
-                    ` : ''}
+                <!-- Claims Folder Documents Card -->
+                <div class="card" id="claims-folder-card">
+                    <div class="card-header">
+                        <h2 class="card-title">📁 Claims Folder</h2>
+                        <div id="claims-folder-header-actions"></div>
+                    </div>
+                    <div id="claims-folder-section">
+                        <p class="doc-loading" style="padding:16px 0;color:#8b92a0;">Loading documents…</p>
+                    </div>
                 </div>
 
                 <!-- Reporting Party Card -->

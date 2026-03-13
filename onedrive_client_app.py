@@ -582,6 +582,41 @@ class OneDriveClientApp:
             print(f"  ✗ Error getting folder info: {str(e)}")
             return None
 
+    def list_files_in_subfolder(self, folder_path):
+        """List all files in a specific OneDrive subfolder path.
+
+        Args:
+            folder_path: Full OneDrive path (e.g., "Claims_fraud/CN_7738446180")
+
+        Returns:
+            List of file info dicts with id, name, size, modified, web_url
+        """
+        try:
+            children_url = (
+                f"https://graph.microsoft.com/v1.0/users/{self.user_email}"
+                f"/drive/root:/{folder_path}:/children"
+            )
+            response = requests.get(children_url, headers=self._get_headers())
+            response.raise_for_status()
+
+            items = response.json().get("value", [])
+            files = []
+            for item in items:
+                if "file" in item:
+                    files.append({
+                        "id": item["id"],
+                        "name": item["name"],
+                        "size": item.get("size", 0),
+                        "modified": item.get("lastModifiedDateTime", ""),
+                        "web_url": item.get("webUrl", ""),
+                    })
+            return files
+
+        except Exception as e:
+            raise Exception(f"Failed to list files in subfolder '{folder_path}': {str(e)}")
+
+
+
     def get_file_info(self, file_path):
         """Get file information for a full file path including web URL.
         
