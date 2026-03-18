@@ -626,9 +626,19 @@ class FraudDetectionSystem:
             if 'metadata' in results:
                 results['metadata']['policy_number'] = confirmed_policy_number
         
+        def strip_session_prefix_from_stem(file_stem: str) -> str:
+            """Remove leading UUID session prefix from a filename stem, if present."""
+            import re
+            match = re.match(
+                r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}_(.+)$",
+                file_stem or ""
+            )
+            return match.group(1) if match else file_stem
+
         # Generate output filename based on input PDF name
         if input_pdf_path:
-            base_name = os.path.splitext(os.path.basename(input_pdf_path))[0]
+            raw_base_name = os.path.splitext(os.path.basename(input_pdf_path))[0]
+            base_name = strip_session_prefix_from_stem(raw_base_name)
             output_base_name = f"{base_name}_report"
         else:
             # Fallback to timestamp if no input path provided

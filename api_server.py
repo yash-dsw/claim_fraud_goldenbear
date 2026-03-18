@@ -9,6 +9,7 @@ Workflow:
 import os
 import json
 import uuid
+import base64
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from flask import Flask, request, jsonify, send_file, send_from_directory
@@ -17,6 +18,8 @@ from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
+from utils import extract_claim_fields, is_pdf_valid
+from email_sender import EmailSender
 
 # Load environment variables
 load_dotenv()
@@ -35,6 +38,38 @@ CORS(app, resources={
         "allow_headers": ["*"]
     }
 })
+
+
+@app.before_request
+def handle_preflight():
+    """Return explicit CORS headers for any OPTIONS preflight request."""
+    if request.method == 'OPTIONS':
+        origin = request.headers.get('Origin', '*')
+        req_headers = request.headers.get(
+            'Access-Control-Request-Headers',
+            'Content-Type, Authorization, ngrok-skip-browser-warning, Accept'
+        )
+        response = jsonify({'status': 'ok'})
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+        response.headers['Access-Control-Allow-Headers'] = req_headers
+        response.headers['Access-Control-Max-Age'] = '3600'
+        response.headers['Vary'] = 'Origin'
+        return response, 200
+
+
+@app.after_request
+def add_cors_headers(response):
+    """Ensure CORS headers are present on all responses, including errors."""
+    origin = request.headers.get('Origin', '*')
+    response.headers['Access-Control-Allow-Origin'] = origin
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+    response.headers['Access-Control-Allow-Headers'] = request.headers.get(
+        'Access-Control-Request-Headers',
+        'Content-Type, Authorization, ngrok-skip-browser-warning, Accept'
+    )
+    response.headers['Vary'] = 'Origin'
+    return response
 
 @app.route('/debug-cors', methods=['GET'])
 def debug_cors():
@@ -131,6 +166,7 @@ class SessionData:
         self.output_pdf_url = None
         self.form_pdf_path = None  # Form PDF from frontend
         self.form_pdf_url = None  # OneDrive URL for form PDF
+        self.deferred_output_paths = None  # (json_path, html_path, pdf_path) generated during defer mode
         # OneDrive file IDs for cleanup
         self.onedrive_pdf_id = None
         self.onedrive_json_id = None
@@ -175,6 +211,127 @@ def cleanup_expired_sessions():
     
     for filename in expired_pending:
         pending_frontend_data.pop(filename, None)
+
+
+def is_claim_filename(filename: str) -> bool:
+    """Return True when filename starts with C + digit and ends with .pdf."""
+    if not filename:
+        return False
+    lower = filename.lower()
+    return len(lower) > 2 and lower[0] == 'c' and lower[1].isdigit() and lower.endswith('.pdf')
+
+
+def strip_session_prefix_from_filename(filename: str) -> str:
+    """Strip leading UUID session prefix from filename when present."""
+    import re
+    match = re.match(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}_(.+)$",
+        filename or ""
+    )
+    return match.group(1) if match else filename
+
+
+def build_email_metadata_from_payload(payload: dict) -> dict:
+    """Build companion-style email metadata from frontend payload for EML retrieval."""
+    email_metadata = payload.get('email_metadata')
+    if isinstance(email_metadata, dict) and email_metadata:
+        # Sanitize internetMessageId before returning
+        if 'internetMessageId' in email_metadata:
+            msg_id = email_metadata['internetMessageId']
+            if msg_id and isinstance(msg_id, str):
+                # Remove anything after the first closing '>'
+                first_close = msg_id.find('>')
+                if first_close != -1:
+                    msg_id = msg_id[:first_close + 1]
+                    email_metadata['internetMessageId'] = msg_id
+        return email_metadata
+
+    # Fallback: construct metadata from flattened email_data fields
+    email_data = payload.get('email_data', {}) if isinstance(payload.get('email_data'), dict) else {}
+    user_email = email_data.get('userEmail') or payload.get('userEmail')
+
+    # Sanitize internetMessageId by removing anything after the first '>'
+    msg_id = email_data.get('internetMessageId') or payload.get('internetMessageId', '')
+    if msg_id and isinstance(msg_id, str):
+        first_close = msg_id.find('>')
+        if first_close != -1:
+            msg_id = msg_id[:first_close + 1]
+
+    return {
+        'internetMessageId': msg_id,
+        'toRecipients': [user_email] if user_email else [],
+        'from': email_data.get('from') or payload.get('from', ''),
+        'subject': email_data.get('subject') or payload.get('subject', ''),
+        'receivedDateTime': email_data.get('receivedDateTime') or payload.get('receivedDateTime', '')
+    }
+
+
+def extract_claim_attachment_from_payload(payload: dict, expected_filename: str = None) -> dict:
+    """Find a claims PDF attachment from payload structures used by Outlook taskpane."""
+    # Preferred single attachment object
+    for key in ('claims_attachment', 'attachment'):
+        candidate = payload.get(key)
+        if isinstance(candidate, dict):
+            name = candidate.get('name', '')
+            if name and is_claim_filename(name):
+                if expected_filename and name != expected_filename:
+                    continue
+                return candidate
+
+    # Fallback list form
+    attachments = payload.get('attachments')
+    if isinstance(attachments, list):
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            name = att.get('name', '')
+            if not name or not is_claim_filename(name):
+                continue
+            if expected_filename and name != expected_filename:
+                continue
+            return att
+
+    return None
+
+
+def create_session_from_frontend_attachment(attachment: dict, email_metadata: dict = None):
+    """Create a new processing session directly from frontend attachment content."""
+    filename = (attachment or {}).get('name', '').strip()
+    if not is_claim_filename(filename):
+        return None, None, 'Attachment must be a claims PDF starting with C + number'
+
+    content_b64 = attachment.get('contentBytes') or attachment.get('content')
+    if not content_b64:
+        return None, None, 'Attachment contentBytes/content is required'
+
+    try:
+        pdf_bytes = base64.b64decode(content_b64)
+    except Exception as e:
+        return None, None, f'Invalid attachment base64 content: {str(e)}'
+
+    session_id = str(uuid.uuid4())
+    session = SessionData(session_id)
+
+    local_pdf_name = f"{session_id}_{filename}"
+    pdf_path = os.path.join(CONFIG['INPUT_FOLDER'], local_pdf_name)
+    with open(pdf_path, 'wb') as f:
+        f.write(pdf_bytes)
+
+    is_valid, reason = is_pdf_valid(pdf_path)
+    if not is_valid:
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+        return None, None, f'Invalid PDF: {reason}'
+
+    claim_data = extract_claim_fields(pdf_path)
+    session.pdf_path = pdf_path
+    session.claim_data = claim_data
+    session.email_metadata = email_metadata or {}
+
+    sessions[session_id] = session
+    return session_id, session, None
 
 
 # ============================================================================
@@ -697,8 +854,10 @@ def confirm_email_fields():
                 # Decode base64 PDF
                 pdf_bytes = base64.b64decode(form_pdf_base64)
                 
-                # Save form PDF locally first
-                form_pdf_filename = f"form_{os.path.basename(session.pdf_path).replace('.pdf', '')}.pdf"
+                # Save form PDF locally using filename without UUID session prefix
+                local_pdf_name = os.path.basename(session.pdf_path)
+                original_filename = strip_session_prefix_from_filename(local_pdf_name)
+                form_pdf_filename = f"form_{original_filename.replace('.pdf', '')}.pdf"
                 form_pdf_path = os.path.join(CONFIG['OUTPUT_FOLDER'], form_pdf_filename)
                 
                 with open(form_pdf_path, 'wb') as f:
@@ -761,7 +920,16 @@ def process_claim():
             "comments": "...",
             "timestamp": "..."
         },
-        "form_pdf": "base64_encoded_pdf"  // Optional: form PDF from frontend
+        "form_pdf": "base64_encoded_pdf",  // Optional: form PDF from frontend
+        "claims_attachment": {              // Required when no existing session
+            "name": "C1_JohnDoe.pdf",
+            "contentBytes": "base64_pdf"
+        },
+        "email_metadata": {                // Optional for EML download
+            "internetMessageId": "...",
+            "toRecipients": ["user@domain.com"],
+            "subject": "..."
+        }
     }
     
     OR:
@@ -787,6 +955,7 @@ def process_claim():
         # Extract email fields and form PDF from request
         email_fields = data.get('email_fields', {})
         form_pdf_base64 = data.get('form_pdf')
+        defer_policy_folder = bool(data.get('defer_policy_folder', False))
         
         if not email_fields:
             return jsonify({'error': 'email_fields is required in request body'}), 400
@@ -795,6 +964,7 @@ def process_claim():
         session = None
         session_id = data.get('session_id')
         filename = data.get('filename')
+        email_metadata = build_email_metadata_from_payload(data)
         
         if session_id:
             session = sessions.get(session_id)
@@ -809,29 +979,31 @@ def process_claim():
             return jsonify({'error': 'Either filename or session_id is required'}), 400
         
         if not session:
-            # Session doesn't exist yet - watcher hasn't finished processing
-            # Store frontend data for when session is ready
-            if filename:
-                print(f"\n[PROCESS] No session found yet for {filename}")
-                print(f"[PROCESS] Storing frontend data for later use...")
-                
-                pending_frontend_data[filename] = {
-                    'email_fields': email_fields,
-                    'form_pdf_base64': form_pdf_base64,
-                    'received_at': datetime.now().isoformat(),
-                    'processed': False
-                }
-                
-                print(f"[PROCESS] ✓ Frontend data stored. Will process when watcher completes.")
-                
+            # No watcher dependency: create session directly from frontend attachment payload.
+            if filename and not is_claim_filename(filename):
                 return jsonify({
                     'success': True,
-                    'status': 'pending',
-                    'message': 'Data received. Processing will complete when file detection finishes.',
-                    'filename': filename
+                    'status': 'skipped',
+                    'message': 'File skipped - only filenames starting with C + number are processed',
+                    'filename': filename,
+                    'reason': 'filename_filter'
                 }), 200
-            else:
-                return jsonify({'error': 'Session not found or expired'}), 404
+
+            claim_attachment = extract_claim_attachment_from_payload(data, filename)
+            if not claim_attachment:
+                return jsonify({
+                    'error': 'Session not found. Provide claims_attachment with base64 content for direct processing.'
+                }), 400
+
+            session_id, session, create_error = create_session_from_frontend_attachment(
+                claim_attachment,
+                email_metadata=email_metadata
+            )
+            if create_error:
+                return jsonify({'error': create_error}), 400
+
+            filename = os.path.basename(session.pdf_path) if session.pdf_path else claim_attachment.get('name')
+            print(f"\n[PROCESS] Direct session created from frontend attachment: {session_id}")
         
         if not session.claim_data:
             return jsonify({'error': 'No extracted data found in session'}), 400
@@ -865,8 +1037,10 @@ def process_claim():
                 # Decode base64 PDF
                 pdf_bytes = base64.b64decode(form_pdf_base64)
                 
-                # Save form PDF locally first
-                form_pdf_filename = f"form_{os.path.basename(session.pdf_path).replace('.pdf', '')}.pdf"
+                # Save form PDF locally using filename without UUID session prefix
+                local_pdf_name = os.path.basename(session.pdf_path)
+                original_filename = strip_session_prefix_from_filename(local_pdf_name)
+                form_pdf_filename = f"form_{original_filename.replace('.pdf', '')}.pdf"
                 form_pdf_path = os.path.join(CONFIG['OUTPUT_FOLDER'], form_pdf_filename)
                 
                 with open(form_pdf_path, 'wb') as f:
@@ -883,27 +1057,23 @@ def process_claim():
         
         # Import fraud detection system
         from app import FraudDetectionSystem
-        from email_sender import load_email_metadata, get_recipient_email
-        from onedrive_client_app import OneDriveClientApp
         
         # Initialize fraud system
         fraud_system = FraudDetectionSystem(use_ai=True)
         
-        # Use stored fraud detection results (already analyzed by watcher)
+        # Run fraud analysis inline when watcher data is not present.
         print(f"\n📋 Checking fraud analysis results...")
-        
+
         if not session.results:
-            # Watcher hasn't completed fraud analysis yet
-            # Store frontend data in session for when analysis completes
-            print(f"[PROCESS] Fraud analysis not ready yet. Storing frontend data...")
-            session.confirmed_email_fields = email_fields
-            
-            return jsonify({
-                'success': True,
-                'status': 'pending_analysis',
-                'message': 'Data received. Report will generate when fraud analysis completes.',
-                'filename': filename
-            }), 200
+            print(f"[PROCESS] Running fraud analysis directly from uploaded claim PDF...")
+            analysis_result = fraud_system.analyze_claim(session.pdf_path)
+            if analysis_result.get('error'):
+                return jsonify({
+                    'success': False,
+                    'error': analysis_result.get('error'),
+                    'details': analysis_result
+                }), 400
+            session.results = analysis_result
         
         print(f"   ✓ Fraud analysis complete")
         results = session.results
@@ -925,6 +1095,47 @@ def process_claim():
         
         # Generate console report
         fraud_system.generate_report(results, output_format="console")
+
+        # Defer OneDrive folder creation/finalization until frontend submit confirms policy number.
+        if defer_policy_folder:
+            # Generate local report files now, but skip OneDrive/email finalization.
+            try:
+                original_onedrive_client = fraud_system.onedrive_client
+                original_email_sender = fraud_system.email_sender
+                fraud_system.onedrive_client = None
+                fraud_system.email_sender = None
+
+                preview_output_paths = fraud_system.save_results(
+                    results,
+                    email_metadata=None,
+                    input_pdf_path=session.pdf_path,
+                    claims_folder_path=None,
+                    confirmed_policy_number=policy_number
+                )
+                if preview_output_paths and isinstance(preview_output_paths, tuple) and len(preview_output_paths) >= 3:
+                    session.deferred_output_paths = preview_output_paths
+                    session.output_pdf_path = preview_output_paths[2]
+            except Exception as preview_error:
+                print(f"[PROCESS] ⚠ Deferred local report generation failed: {preview_error}")
+            finally:
+                try:
+                    fraud_system.onedrive_client = original_onedrive_client
+                    fraud_system.email_sender = original_email_sender
+                except Exception:
+                    pass
+
+            print("[PROCESS] Defer mode enabled. Skipping CN folder creation until policy confirmation submit.")
+            return jsonify({
+                'success': True,
+                'status': 'awaiting_policy_confirmation',
+                'session_id': session_id,
+                'results': {
+                    'risk_level': results.get('fraud_detection', {}).get('risk_level', 'Unknown'),
+                    'risk_score': results.get('fraud_detection', {}).get('risk_score', 0),
+                    'flags_count': results.get('fraud_detection', {}).get('flags_count', 0)
+                },
+                'message': 'Analysis complete. Submit confirmed policy number to create CN folder and finalize.'
+            }), 200
         
         # Determine claims folder path
         claims_folder_path = None
@@ -940,15 +1151,49 @@ def process_claim():
                 )
                 session.claims_folder_path = claims_folder_path
                 print(f"[FOLDER] Claims folder: {claims_folder_path}")
+                try:
+                    folder_info = fraud_system.onedrive_client.get_subfolder_info(claims_folder_path)
+                    if folder_info and folder_info.get('web_url'):
+                        session.claims_folder_url = folder_info['web_url']
+                        print(f"[FOLDER] Claims folder URL ready: {session.claims_folder_url}")
+                except Exception as e:
+                    print(f"[FOLDER] ⚠ Could not get claims folder URL yet: {e}")
         
         # Save results and send email with confirmed policy number
-        output_paths = fraud_system.save_results(
-            results,
-            email_metadata=session.email_metadata,
-            input_pdf_path=session.pdf_path,
-            claims_folder_path=claims_folder_path,
-            confirmed_policy_number=policy_number  # Pass the confirmed/updated policy number
+        use_deferred_outputs = (
+            not defer_policy_folder
+            and session.deferred_output_paths
+            and isinstance(session.deferred_output_paths, tuple)
+            and len(session.deferred_output_paths) >= 3
+            and all(path is None or os.path.exists(path) for path in session.deferred_output_paths)
         )
+
+        if use_deferred_outputs:
+            output_paths = session.deferred_output_paths
+            print("[FINALIZE] Reusing deferred local report files (no reprocessing/regeneration)")
+
+            # Upload deferred PDF now that policy is confirmed and folder is ready.
+            deferred_pdf_path = output_paths[2]
+            if deferred_pdf_path and fraud_system.onedrive_client and claims_folder_path:
+                upload_result = fraud_system.onedrive_client.upload_file_to_path(
+                    deferred_pdf_path,
+                    claims_folder_path
+                )
+                if upload_result and upload_result.get('web_url'):
+                    session.output_pdf_url = upload_result.get('web_url')
+                    print(f"[FINALIZE] ✓ Deferred PDF uploaded: {upload_result.get('name')}")
+                elif upload_result:
+                    print("[FINALIZE] ✓ Deferred PDF uploaded (web URL not returned)")
+                else:
+                    print("[FINALIZE] ⚠ Failed to upload deferred PDF")
+        else:
+            output_paths = fraud_system.save_results(
+                results,
+                email_metadata=session.email_metadata,
+                input_pdf_path=session.pdf_path,
+                claims_folder_path=claims_folder_path,
+                confirmed_policy_number=policy_number  # Pass the confirmed/updated policy number
+            )
         
         # Capture output PDF information
         # save_results returns: (json_path, html_path, pdf_path)
@@ -992,33 +1237,140 @@ def process_claim():
                 print(f"[OUTPUT] ✓ Report PDF saved: {session.output_pdf_path}")
         
         session.processing_complete = True
+
+        # Ensure original input PDF is present in claims folder for direct (no-watcher) flow.
+        if (
+            session.pdf_path
+            and os.path.exists(session.pdf_path)
+            and fraud_system.onedrive_client
+            and claims_folder_path
+            and not session.onedrive_pdf_id
+        ):
+            try:
+                import shutil
+                # Get original filename without UUID session prefix
+                local_pdf_name = os.path.basename(session.pdf_path)
+                original_filename = strip_session_prefix_from_filename(local_pdf_name)
+                
+                # Create a temporary copy with the correct name for upload
+                temp_upload_path = os.path.join(CONFIG['OUTPUT_FOLDER'], original_filename)
+                shutil.copy2(session.pdf_path, temp_upload_path)
+                
+                input_upload = fraud_system.onedrive_client.upload_file_to_path(
+                    temp_upload_path,
+                    claims_folder_path
+                )
+                
+                # Clean up the temporary copy
+                try:
+                    os.remove(temp_upload_path)
+                except:
+                    pass
+                
+                if input_upload:
+                    print(f"[INPUT_PDF] ✓ Uploaded original input PDF as {original_filename}")
+                else:
+                    print(f"[INPUT_PDF] ⚠ Failed to upload original input PDF")
+            except Exception as e:
+                print(f"[INPUT_PDF] ⚠ Error uploading original input PDF: {e}")
         
-        # Upload form PDF to claims folder if available - DISABLED
-        # if session.form_pdf_path and fraud_system.onedrive_client and claims_folder_path:
-        #     try:
-        #         print(f"\n[FORM_PDF] Uploading form PDF to claims folder as 'form_response.pdf'...")
-        #         # Upload with custom name 'form_response.pdf'
-        #         upload_url = f"https://graph.microsoft.com/v1.0/users/{fraud_system.onedrive_client.user_email}/drive/root:/{claims_folder_path}/form_response.pdf:/content"
-        #         
-        #         with open(session.form_pdf_path, 'rb') as f:
-        #             file_content = f.read()
-        #         
-        #         headers = fraud_system.onedrive_client._get_headers()
-        #         headers["Content-Type"] = "application/octet-stream"
-        #         
-        #         import requests
-        #         response = requests.put(upload_url, headers=headers, data=file_content)
-        #         response.raise_for_status()
-        #         
-        #         result = response.json()
-        #         if result.get('webUrl'):
-        #             session.form_pdf_url = result.get('webUrl')
-        #             print(f"[FORM_PDF] ✓ Form PDF uploaded to {claims_folder_path} as 'form_response.pdf'")
-        #             print(f"[FORM_PDF]   URL: {session.form_pdf_url}")
-        #         else:
-        #             print(f"[FORM_PDF] ⚠ Form PDF uploaded but no URL returned")
-        #     except Exception as e:
-        #         print(f"[FORM_PDF] ⚠ Error uploading form PDF: {e}")
+        # Upload form PDF to claims folder if available.
+        if session.form_pdf_path and fraud_system.onedrive_client and claims_folder_path:
+            try:
+                print(f"\n[FORM_PDF] Uploading form PDF to claims folder...")
+                form_upload_result = fraud_system.onedrive_client.upload_file_to_path(
+                    session.form_pdf_path,
+                    claims_folder_path
+                )
+                if form_upload_result and form_upload_result.get('web_url'):
+                    session.form_pdf_url = form_upload_result.get('web_url')
+                    print(f"[FORM_PDF] ✓ Form PDF uploaded")
+                    print(f"[FORM_PDF]   URL: {session.form_pdf_url}")
+                elif form_upload_result:
+                    print(f"[FORM_PDF] ✓ Form PDF uploaded (URL not returned)")
+                else:
+                    print(f"[FORM_PDF] ⚠ Form PDF upload failed")
+            except Exception as e:
+                print(f"[FORM_PDF] ⚠ Error uploading form PDF: {e}")
+        
+        # Download and upload EML file (original triggered email)
+        if fraud_system.onedrive_client and claims_folder_path and session.email_metadata:
+            try:
+                print(f"\n[EML] 📧 Downloading and uploading email as EML...")
+                print(f"[EML] Email metadata keys: {session.email_metadata.keys()}")
+                
+                internet_message_id = session.email_metadata.get('internetMessageId')
+                print(f"[EML] internetMessageId: {internet_message_id}")
+                
+                if internet_message_id:
+                    # Initialize EmailSender for EML download
+                    tenant_id = os.getenv('ONEDRIVE_TENANT_ID')
+                    client_id = os.getenv('ONEDRIVE_CLIENT_ID')
+                    client_secret = os.getenv('ONEDRIVE_CLIENT_SECRET')
+                    user_email = os.getenv('ONEDRIVE_USER_EMAIL', 'admin@example.com')
+                    
+                    print(f"[EML] Tenant ID present: {bool(tenant_id)}")
+                    print(f"[EML] Client ID present: {bool(client_id)}")
+                    print(f"[EML] Client secret present: {bool(client_secret)}")
+                    
+                    if tenant_id and client_id and client_secret:
+                        email_sender = EmailSender(tenant_id, client_id, client_secret, user_email)
+                        
+                        # Get original filename without UUID session prefix for EML naming
+                        local_pdf_name = os.path.basename(session.pdf_path) if session.pdf_path else None
+                        original_filename = None
+                        if local_pdf_name:
+                            original_filename = strip_session_prefix_from_filename(local_pdf_name)
+                        
+                        print(f"[EML] Local PDF name: {local_pdf_name}")
+                        print(f"[EML] Original filename: {original_filename}")
+                        
+                        if original_filename:
+                            eml_filename = original_filename.replace('.pdf', '.eml')
+                            eml_local_path = os.path.join(CONFIG['OUTPUT_FOLDER'], eml_filename)
+                            
+                            print(f"[EML] EML filename: {eml_filename}")
+                            print(f"[EML] EML local path: {eml_local_path}")
+                            
+                            # Get mailbox email from toRecipients or use default
+                            mailbox_email = user_email
+                            if isinstance(session.email_metadata.get('toRecipients'), list) and len(session.email_metadata['toRecipients']) > 0:
+                                try:
+                                    mailbox_email = session.email_metadata['toRecipients'][0].get('emailAddress', {}).get('address', user_email)
+                                    print(f"[EML] Using mailbox: {mailbox_email}")
+                                except:
+                                    print(f"[EML] Failed to extract mailbox, using default: {mailbox_email}")
+                            
+                            # Download EML from Graph API
+                            eml_path = email_sender.download_email_as_eml(
+                                internet_message_id,
+                                output_path=eml_local_path,
+                                user_email=mailbox_email
+                            )
+                            
+                            if eml_path and os.path.exists(eml_path):
+                                # Upload EML to claims folder
+                                eml_upload_result = fraud_system.onedrive_client.upload_file_to_path(
+                                    eml_path,
+                                    claims_folder_path
+                                )
+                                if eml_upload_result:
+                                    print(f"[EML] ✓ Email downloaded and uploaded to claims folder")
+                                    print(f"[EML]   File: {eml_filename}")
+                                else:
+                                    print(f"[EML] ⚠ Failed to upload EML to claims folder")
+                            else:
+                                print(f"[EML] ⚠ Failed to download EML or file not found at {eml_local_path}")
+                        else:
+                            print(f"[EML] ⚠ Could not determine original filename from {local_pdf_name}")
+                    else:
+                        print(f"[EML] ⚠ Missing credentials - Tenant: {bool(tenant_id)}, Client: {bool(client_id)}, Secret: {bool(client_secret)}")
+                else:
+                    print(f"[EML] ⚠ No internetMessageId in email metadata")
+            except Exception as e:
+                print(f"[EML] ⚠ Error downloading/uploading EML: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Move files on OneDrive
         if fraud_system.onedrive_client:
@@ -1168,12 +1520,14 @@ def process_claim():
         return jsonify({
             'success': True,
             'session_id': session_id,
+            'claim_id': db_claim_id if 'db_claim_id' in locals() else None,
             'results': {
                 'risk_level': results.get('fraud_detection', {}).get('risk_level', 'Unknown'),
                 'risk_score': results.get('fraud_detection', {}).get('risk_score', 0),
                 'flags_count': results.get('fraud_detection', {}).get('flags_count', 0)
             },
             'claims_folder': claims_folder_path,
+            'claims_folder_url': session.claims_folder_url,
             'message': 'Claim processed and report generated'
         }), 200
     
@@ -1182,6 +1536,114 @@ def process_claim():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/claims-api/submit', methods=['POST'])
+def submit_claim_compat():
+    """
+    Backward-compatible endpoint for frontend payloads that use attachment_base64.
+
+    Expected JSON:
+    {
+        "filename": "C1_JohnDoe.pdf",
+        "attachment_base64": "...",
+        "email_fields": {...},
+        "form_pdf": "...",            # optional
+        "email_metadata": {...}         # optional
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        filename = data.get('filename')
+        attachment_base64 = data.get('attachment_base64')
+        email_fields = data.get('email_fields', {})
+
+        if not filename or not attachment_base64:
+            return jsonify({'error': 'filename and attachment_base64 are required'}), 400
+        if not email_fields:
+            return jsonify({'error': 'email_fields is required'}), 400
+
+        normalized_payload = {
+            'filename': filename,
+            'email_fields': email_fields,
+            'form_pdf': data.get('form_pdf'),
+            'defer_policy_folder': bool(data.get('defer_policy_folder', False)),
+            'email_metadata': data.get('email_metadata', {}),
+            'email_data': data.get('email_data', {}),
+            'claims_attachment': {
+                'name': filename,
+                'contentBytes': attachment_base64,
+                'contentType': 'application/pdf'
+            }
+        }
+
+        origin = request.headers.get('Origin')
+        proxy_headers = {'Content-Type': 'application/json'}
+        if origin:
+            proxy_headers['Origin'] = origin
+
+        # Reuse existing /claims-api/process logic without duplicating business logic.
+        with app.test_request_context(
+            '/claims-api/process',
+            method='POST',
+            json=normalized_payload,
+            headers=proxy_headers
+        ):
+            return process_claim()
+
+    except Exception as e:
+        print(f"✗ Submit compatibility error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/claims-api/create-folder', methods=['POST'])
+def create_claims_folder():
+    """Create or fetch a claims subfolder and return its OneDrive web URL."""
+    try:
+        data = request.get_json() or {}
+        policy_number = (data.get('policy_number') or '').strip()
+
+        if not policy_number:
+            return jsonify({'success': False, 'error': 'policy_number is required'}), 400
+
+        from app import FraudDetectionSystem
+        fraud_system = FraudDetectionSystem(use_ai=False)
+
+        if not fraud_system.onedrive_client:
+            return jsonify({
+                'success': False,
+                'error': 'OneDrive is not configured on backend'
+            }), 500
+
+        claim_subfolder_name = f"CN_{policy_number}"
+        parent_folder = fraud_system.onedrive_claims_fraud_folder
+
+        folder_id, claims_folder_path = fraud_system.onedrive_client.create_subfolder(
+            parent_folder,
+            claim_subfolder_name
+        )
+
+        if not claims_folder_path:
+            return jsonify({'success': False, 'error': 'Failed to create claims folder'}), 500
+
+        folder_url = None
+        folder_info = fraud_system.onedrive_client.get_subfolder_info(claims_folder_path)
+        if folder_info and folder_info.get('web_url'):
+            folder_url = folder_info['web_url']
+
+        return jsonify({
+            'success': True,
+            'claims_folder': claims_folder_path,
+            'claims_folder_url': folder_url,
+            'policy_number': policy_number
+        }), 200
+
+    except Exception as e:
+        print(f"✗ Create-folder error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/claims-api/output-pdf', methods=['GET'])
@@ -1211,7 +1673,17 @@ def get_output_pdf():
                 'error': 'Session not found'
             }), 404
         
-        # Check if processing is complete
+        # Return folder URL immediately when available (even if processing still running)
+        if not session.processing_complete and session.claims_folder_url:
+            return jsonify({
+                'success': True,
+                'pdf_url': session.claims_folder_url,
+                'filename': os.path.basename(session.output_pdf_path) if session.output_pdf_path else None,
+                'session_id': session_id,
+                'created_at': session.created_at.isoformat(),
+                'claims_folder': session.claims_folder_path,
+                'upload_status': 'in_progress'
+            }), 200
         if not session.processing_complete:
             return jsonify({
                 'success': False,
@@ -1227,7 +1699,8 @@ def get_output_pdf():
                 'filename': os.path.basename(session.output_pdf_path) if session.output_pdf_path else None,
                 'session_id': session_id,
                 'created_at': session.created_at.isoformat(),
-                'claims_folder': session.claims_folder_path
+                'claims_folder': session.claims_folder_path,
+                'upload_status': 'complete'
             }), 200
         elif session.output_pdf_url:
             # Fallback to PDF URL if folder URL not available
@@ -1237,7 +1710,8 @@ def get_output_pdf():
                 'filename': os.path.basename(session.output_pdf_path) if session.output_pdf_path else None,
                 'session_id': session_id,
                 'created_at': session.created_at.isoformat(),
-                'claims_folder': session.claims_folder_path
+                'claims_folder': session.claims_folder_path,
+                'upload_status': 'complete'
             }), 200
         else:
             return jsonify({

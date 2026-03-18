@@ -5,6 +5,7 @@ This version works without user interaction - perfect for hosted/automated scena
 
 import os
 import requests
+import time
 from datetime import datetime
 
 
@@ -29,6 +30,42 @@ class OneDriveClientApp:
         self.folder_name = folder_name
         self.access_token = None
         self.token_expiry = None
+        self.request_timeout = int(os.getenv("ONEDRIVE_HTTP_TIMEOUT", "30"))
+        self.max_retries = int(os.getenv("ONEDRIVE_HTTP_RETRIES", "3"))
+        self.retry_backoff_seconds = float(os.getenv("ONEDRIVE_HTTP_RETRY_BACKOFF", "1.5"))
+
+    def _request(self, method, url, **kwargs):
+        """HTTP request helper with retry/backoff for transient Graph/Auth failures."""
+        retryable_status_codes = {429, 500, 502, 503, 504}
+        timeout = kwargs.pop("timeout", self.request_timeout)
+        last_exception = None
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = requests.request(method, url, timeout=timeout, **kwargs)
+
+                if response.status_code in retryable_status_codes and attempt < self.max_retries:
+                    wait_time = self.retry_backoff_seconds * (2 ** (attempt - 1))
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after and retry_after.isdigit():
+                        wait_time = max(wait_time, float(retry_after))
+                    print(f"  ⚠ HTTP {response.status_code} from Graph/Auth. Retrying in {wait_time:.1f}s (attempt {attempt}/{self.max_retries})...")
+                    time.sleep(wait_time)
+                    continue
+
+                return response
+
+            except requests.exceptions.RequestException as exc:
+                last_exception = exc
+                if attempt >= self.max_retries:
+                    raise
+                wait_time = self.retry_backoff_seconds * (2 ** (attempt - 1))
+                print(f"  ⚠ Network error during Graph/Auth call. Retrying in {wait_time:.1f}s (attempt {attempt}/{self.max_retries}): {exc}")
+                time.sleep(wait_time)
+
+        if last_exception:
+            raise last_exception
+        raise Exception("HTTP request failed without a response")
     
     def _get_access_token(self):
         """Get access token using client credentials flow."""
@@ -45,7 +82,7 @@ class OneDriveClientApp:
         }
         
         try:
-            response = requests.post(token_url, data=data)
+            response = self._request("POST", token_url, data=data)
             response.raise_for_status()
             
             token_data = response.json()
@@ -56,7 +93,7 @@ class OneDriveClientApp:
             return self.access_token
             
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Failed to get access token: {str(e)}")
+            raise Exception(f"Failed to get access token after {self.max_retries} attempts: {str(e)}")
     
     def _get_headers(self):
         """Get headers with access token."""
@@ -197,7 +234,7 @@ class OneDriveClientApp:
             # First, try to get the folder if it exists
             folder_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{folder_name}"
             
-            response = requests.get(folder_url, headers=self._get_headers())
+            response = self._request("GET", folder_url, headers=self._get_headers())
             
             if response.status_code == 200:
                 # Folder exists
@@ -212,7 +249,7 @@ class OneDriveClientApp:
                 "@microsoft.graph.conflictBehavior": "rename"
             }
             
-            response = requests.post(create_url, headers=self._get_headers(), json=data)
+            response = self._request("POST", create_url, headers=self._get_headers(), json=data)
             response.raise_for_status()
             
             result = response.json()
@@ -391,7 +428,7 @@ class OneDriveClientApp:
             subfolder_path = f"{parent_folder_name}/{subfolder_name}"
             subfolder_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/drive/root:/{subfolder_path}"
             
-            response = requests.get(subfolder_url, headers=self._get_headers())
+            response = self._request("GET", subfolder_url, headers=self._get_headers())
             
             if response.status_code == 200:
                 # Subfolder exists
@@ -408,7 +445,7 @@ class OneDriveClientApp:
                 "@microsoft.graph.conflictBehavior": "rename"
             }
             
-            response = requests.post(create_url, headers=self._get_headers(), json=data)
+            response = self._request("POST", create_url, headers=self._get_headers(), json=data)
             response.raise_for_status()
             
             result = response.json()
